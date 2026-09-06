@@ -251,12 +251,7 @@ export default function Home() {
       <div className="sticky top-0 z-40 backdrop-blur-xl bg-white/80 border-b border-black/[.06]">
         <div className="mx-auto max-w-[1280px] px-6 h-[52px] flex items-center justify-between">
           <div className="flex items-center gap-4">
-            <div className="flex gap-1.5">
-              <span className="w-3 h-3 rounded-full bg-[#FF5F57] border border-black/10" />
-              <span className="w-3 h-3 rounded-full bg-[#FFBD2E] border border-black/10" />
-              <span className="w-3 h-3 rounded-full bg-[#28C840] border border-black/10" />
-            </div>
-            <div className="flex items-center gap-2.5 ml-3">
+            <div className="flex items-center gap-2.5">
               <div className="w-7 h-7 rounded-lg bg-[#007AFF] grid place-items-center text-white">
                 <Zap size={14} />
               </div>
