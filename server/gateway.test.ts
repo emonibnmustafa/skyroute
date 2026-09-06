@@ -1,14 +1,13 @@
 import express from "express";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { registerGatewayRoutes } from "./gatewayRoutes";
-import { authenticateClientKey, createClientKey, listCombos, listProviders, proxyChat, snapshot, testProviderModel, upsertCombo, upsertProvider } from "./gatewayStore";
+import { authenticateClientKey, createClientKey, listCombos, listProviders, proxyChat, snapshot, testProviderModel, upsertCombo, upsertProvider, _resetForTest } from "./gatewayStore";
 
 describe("local gateway core", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
-    const current = snapshot();
-    current.providers.forEach(p => { /* in-memory test isolation is reset by unique IDs and disabled state */ });
+    _resetForTest();
   });
 
   it("never returns upstream API keys in provider listings", () => {

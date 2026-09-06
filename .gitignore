@@ -116,6 +116,8 @@ client/public/__manus__/version.json
 # SkyRoute runtime secrets and configuration
 skyroute-data.json
 localroute-data.json
+*.log
+.manus-logs/
 
 # App bundles
 *.app

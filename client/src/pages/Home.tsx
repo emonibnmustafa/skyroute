@@ -39,10 +39,12 @@ export default function Home() {
   const [providerForm, setProviderForm] = useState({
     id: "",
     name: "",
-    baseUrl: "",
+    baseUrl: "http://localhost:20128/v1",
     apiKey: "",
     modelIdsText: "",
     timeoutMs: 60000,
+    providerType: "openai" as "openai" | "chatgpt-web",
+    cookie: "",
   });
   const [aliasForm, setAliasForm] = useState({ name: "", alias: "", routes: [] as { providerId: string; modelId: string }[] });
   const [keyName, setKeyName] = useState("");
@@ -52,6 +54,7 @@ export default function Home() {
   const [fetchedSearch, setFetchedSearch] = useState("");
   const [allowedSearch, setAllowedSearch] = useState("");
   const [testPopup, setTestPopup] = useState<{ open: boolean; title: string; message: string; ok: boolean } | null>(null);
+  const [cookieCheck, setCookieCheck] = useState<{ ok: boolean; msg: string } | null>(null);
 
   const utils = trpc.useUtils();
   const { data, isLoading } = trpc.gateway.snapshot.useQuery(undefined, { refetchInterval: 5000 });
@@ -60,7 +63,9 @@ export default function Home() {
     onSuccess: () => {
       utils.gateway.snapshot.invalidate();
       allowedQ.refetch();
-      setProviderForm({ id: "", name: "", baseUrl: "", apiKey: "", modelIdsText: "", timeoutMs: 60000 });
+      setProviderForm({ id: "", name: "", baseUrl: "http://localhost:20128/v1", apiKey: "", modelIdsText: "", timeoutMs: 60000, providerType: "openai", cookie: "" });
+      setFetched(null);
+      setCookieCheck(null);
       toast.success("Provider saved");
     },
     onError: (e) => toast.error(e.message),
@@ -83,6 +88,47 @@ export default function Home() {
       }
     },
     onError: (e) => toast.error(e.message),
+  });
+  const discoverChatGpt = (trpc.gateway as any).discoverChatGptModels.useMutation({
+    onMutate: () => {
+      console.log("[SkyRoute] discoverChatGpt mutate start", providerForm.cookie.slice(0,30));
+      setCookieCheck(null);
+    },
+    onSuccess: (ids: string[]) => {
+      console.log("[SkyRoute] discoverChatGpt success", ids.length);
+      if (!ids.length) {
+        toast.error("No models found");
+        setCookieCheck({ ok: false, msg: "No models found — cookie may be invalid" });
+      } else {
+        setProviderForm((s) => ({ ...s, modelIdsText: ids.join("\n") }));
+        setFetched(ids);
+        setFetchedSearch("");
+        setCookieCheck({ ok: true, msg: `Cookie valid — found ${ids.length} models` });
+        toast.success(`Found ${ids.length} ChatGPT models — browse below`);
+      }
+    },
+    onError: (e: any) => {
+      console.error("[SkyRoute] discoverChatGpt error", e);
+      setFetched(null);
+      const msg = e?.message || e?.data?.message || "Cookie invalid";
+      setCookieCheck({ ok: false, msg });
+      toast.error(msg);
+    },
+  });
+  const validateCookie = (trpc.gateway as any).validateChatGptCookie.useMutation({
+    onMutate: () => console.log("[SkyRoute] validateCookie start"),
+    onSuccess: (r: any) => {
+      console.log("[SkyRoute] validate success", r);
+      const msg = r?.message || "Cookie valid — Plus session active";
+      setCookieCheck({ ok: true, msg });
+      toast.success(msg);
+    },
+    onError: (e: any) => {
+      console.error("[SkyRoute] validate error", e);
+      const msg = e?.message || e?.data?.message || "Cookie invalid";
+      setCookieCheck({ ok: false, msg });
+      toast.error(msg);
+    },
   });
   const toggle = trpc.gateway.toggleProvider.useMutation({ onSuccess: () => utils.gateway.snapshot.invalidate() });
   const delProvider = trpc.gateway.deleteProvider.useMutation({ onSuccess: () => { utils.gateway.snapshot.invalidate(); allowedQ.refetch(); toast.success("Removed"); } });
@@ -114,6 +160,21 @@ export default function Home() {
   });
   const removeAllowed = trpc.gateway.removeAllowedModel.useMutation({ onSuccess: () => allowedQ.refetch() });
   const toggleAllowed = trpc.gateway.toggleAllowedModel.useMutation({ onSuccess: () => allowedQ.refetch() });
+  const refreshModels = (trpc.gateway as any).refreshModels.useMutation({
+    onSuccess: (res: any) => {
+      utils.gateway.snapshot.invalidate();
+      allowedQ.refetch();
+      const totalDiscovered = res?.results?.reduce((a: number, r: any) => a + (r.discovered || 0), 0) ?? 0;
+      if (res?.added > 0) toast.success(`Refreshed ${res.refreshed} provider(s) — added ${res.added} new model(s) (${totalDiscovered} total)`);
+      else if (res?.refreshed > 0) toast.success(`Refreshed ${res.refreshed} provider(s) — all ${totalDiscovered} models up-to-date`);
+      else if (res?.skipped > 0 && res?.refreshed === 0) toast.error("No enabled providers to refresh");
+      if (res?.errors?.length) {
+        const msg = res.errors.map((e: any) => `${e.providerName}: ${e.error}`).join("; ").slice(0, 200);
+        toast.error(`${res.errors.length} provider(s) failed — ${msg}`);
+      }
+    },
+    onError: (e: any) => toast.error(e.message),
+  });
   const testAllowed = trpc.gateway.testAllowedModel.useMutation({
     onSuccess: (m) => {
       allowedQ.refetch();
@@ -143,6 +204,12 @@ export default function Home() {
       .then((r) => setHealth(r.ok ? "online" : "offline"))
       .catch(() => setHealth("offline"));
   }, []);
+  useEffect(() => {
+    // reset cookie check when cookie or type changes
+    setCookieCheck(null);
+    // also clear fetched models when switching type
+    setFetched(null);
+  }, [providerForm.cookie, providerForm.providerType]);
 
   const filteredProviders = useMemo(() => {
     if (!q) return providers;
@@ -205,12 +272,12 @@ export default function Home() {
           </div>
           <div className="flex items-center gap-2">
             <div className="hidden sm:flex items-center gap-2 text-xs">
-              <span className="text-black/40">Gateway</span>
-              <button onClick={() => copy(`${endpoint}/v1`)} className="mac-card rounded-full px-3 py-1.5 font-mono text-[12px] flex items-center gap-1.5 hover:bg-white">
+              <span className="text-black/40" title="Claude Desktop Gateway mode expects the root URL (no /v1). VS Code / OpenAI clients need the /v1 URL.">Gateway</span>
+              <button onClick={() => copy(`${endpoint}/v1`)} title="OpenAI / VS Code URL (with /v1). For Claude Desktop Gateway mode, use the root URL without /v1." className="mac-card rounded-full px-3 py-1.5 font-mono text-[12px] flex items-center gap-1.5 hover:bg-white">
                 {endpoint}/v1 <Copy size={12} className="opacity-40" />
               </button>
             </div>
-            <a href="https://github.com" target="_blank" className="w-8 h-8 rounded-full mac-card grid place-items-center hover:bg-white">
+            <a href="https://github.com/emonibnmustafa/skyroute" target="_blank" className="w-8 h-8 rounded-full mac-card grid place-items-center hover:bg-white">
               <ExternalLink size={14} className="opacity-60" />
             </a>
           </div>
@@ -288,30 +355,40 @@ export default function Home() {
                   form={providerForm}
                   setForm={setProviderForm}
                   onSave={() => {
+                    const isWeb = providerForm.providerType === "chatgpt-web";
                     const ids = providerForm.modelIdsText
                       .split(/[\n,]+/)
                       .map((s) => s.trim())
                       .filter(Boolean);
-                    if (!ids.length) return toast.error("Add at least one model ID");
+                    if (!ids.length) return toast.error("Add at least one model ID — use Fetch to populate");
+                    if (isWeb && !providerForm.cookie.trim()) return toast.error("Paste ChatGPT cookie first");
+                    if (!isWeb && !providerForm.apiKey && !providerForm.id) return toast.error("Enter API key");
                     saveProvider.mutate({
                       id: providerForm.id || undefined,
                       name: providerForm.name,
-                      baseUrl: providerForm.baseUrl,
-                      apiKey: providerForm.apiKey || undefined,
+                      baseUrl: isWeb ? "https://chatgpt.com" : providerForm.baseUrl,
+                      apiKey: isWeb ? undefined : (providerForm.apiKey || undefined),
                       modelIds: ids,
                       modelId: ids[0],
                       timeoutMs: Number(providerForm.timeoutMs) || 60000,
-                    });
+                      providerType: providerForm.providerType,
+                      cookie: isWeb ? providerForm.cookie : undefined,
+                    } as any);
                   }}
                   onEdit={(p: any) => {
-                    setProviderForm({ id: p.id, name: p.name, baseUrl: p.baseUrl, apiKey: "", modelIdsText: (p.modelIds || [p.modelId]).join("\n"), timeoutMs: p.timeoutMs });
+                    setProviderForm({ id: p.id, name: p.name, baseUrl: p.baseUrl, apiKey: "", modelIdsText: (p.modelIds || [p.modelId]).join("\n"), timeoutMs: p.timeoutMs, providerType: p.providerType || "openai", cookie: "" });
                     setFetched(null);
                   }}
                   onDiscover={() => {
+                    console.log("[SkyRoute] onDiscover click", providerForm.providerType, providerForm.cookie.slice(0,20));
+                    const isWeb = providerForm.providerType === "chatgpt-web";
+                    if (isWeb) {
+                      if (!providerForm.cookie.trim()) return toast.error("Paste cookie first");
+                      console.log("[SkyRoute] calling discoverChatGpt.mutate");
+                      discoverChatGpt.mutate({ cookie: providerForm.cookie });
+                      return;
+                    }
                     if (!providerForm.baseUrl) return toast.error("Enter base URL");
-                    if (!providerForm.apiKey && !providerForm.id) return toast.error("Enter API key");
-                    const key = providerForm.apiKey || providers.find((x) => x.id === providerForm.id)?.id || "";
-                    // use form key if provided, else try to discover via existing provider id is not possible without key, so require key
                     if (!providerForm.apiKey) return toast.error("Enter API key to fetch");
                     discover.mutate({ baseUrl: providerForm.baseUrl, apiKey: providerForm.apiKey });
                   }}
@@ -328,13 +405,19 @@ export default function Home() {
                   onTest={(id: string) => testProvider.mutate({ id })}
                   onToggle={(id: string, en: boolean) => toggle.mutate({ id, enabled: en })}
                   onDelete={(id: string) => delProvider.mutate({ id })}
-                  discovering={discover.isPending}
+                  discovering={discover.isPending || discoverChatGpt.isPending}
                   showKey={showKey}
                   setShowKey={setShowKey}
+                  onValidateCookie={() => {
+                    if (!providerForm.cookie.trim()) return toast.error("Paste cookie first");
+                    validateCookie.mutate({ cookie: providerForm.cookie });
+                  }}
+                  validating={validateCookie.isPending}
+                  cookieCheck={cookieCheck}
                 />
               )}
-              {tab === "models" && <ModelsSection allowed={filteredAllowed} providers={providers} search={allowedSearch} setSearch={setAllowedSearch} onToggle={(id: string, en: boolean) => toggleAllowed.mutate({ id, enabled: en })} onRemove={(id: string) => removeAllowed.mutate({ id })} onTest={(id: string) => testAllowed.mutate({ id })} testing={testAllowed.isPending} />}
-              {tab === "enabled" && <EnabledModelsSection allowed={allowed.filter((m: any) => m.enabled)} providers={providers} onToggle={(id: string, en: boolean) => toggleAllowed.mutate({ id, enabled: en })} onRemove={(id: string) => removeAllowed.mutate({ id })} onTest={(id: string) => testAllowed.mutate({ id })} testing={testAllowed.isPending} />}
+              {tab === "models" && <ModelsSection allowed={filteredAllowed} providers={providers} search={allowedSearch} setSearch={setAllowedSearch} onToggle={(id: string, en: boolean) => toggleAllowed.mutate({ id, enabled: en })} onRemove={(id: string) => removeAllowed.mutate({ id })} onTest={(id: string) => testAllowed.mutate({ id })} testing={testAllowed.isPending} onRefresh={() => refreshModels.mutate()} refreshing={refreshModels.isPending} />}
+              {tab === "enabled" && <EnabledModelsSection allowed={allowed.filter((m: any) => m.enabled)} providers={providers} onToggle={(id: string, en: boolean) => toggleAllowed.mutate({ id, enabled: en })} onRemove={(id: string) => removeAllowed.mutate({ id })} onTest={(id: string) => testAllowed.mutate({ id })} testing={testAllowed.isPending} onRefresh={() => refreshModels.mutate()} refreshing={refreshModels.isPending} />}
               {tab === "aliases" && (
                 <Aliases
                   providers={providers}
@@ -484,53 +567,106 @@ function Overview({ providers, combos, keys, allowed, endpoint, onTab }: any) {
   );
 }
 
-function Providers({ providers, form, setForm, onSave, onEdit, fetched, fetchedSearch, setFetchedSearch, onAddToAllowed, allowed, onTest, onToggle, onDelete, discovering, showKey, setShowKey }: any) {
+function Providers({ providers, form, setForm, onSave, onEdit, fetched, fetchedSearch, setFetchedSearch, onAddToAllowed, allowed, onTest, onToggle, onDelete, discovering, showKey, setShowKey, onValidateCookie, validating, cookieCheck }: any) {
   const isEdit = !!form.id;
+  const isWeb = form.providerType === "chatgpt-web";
   return (
     <div className="space-y-5">
       <Card
         title={isEdit ? "Edit provider" : "Add provider"}
-        subtitle="Upstream OpenAI-compatible. OmniRoute preset included."
+        subtitle={isWeb ? "ChatGPT Web — use Plus cookie to unlock gpt-5.6 without API key" : "Upstream OpenAI-compatible. OmniRoute preset included."}
         action={
           <div className="flex gap-2">
             <button
-              onClick={() => setForm({ id: "", name: "OmniRoute", baseUrl: "http://localhost:20128/v1", apiKey: "", modelIdsText: "", timeoutMs: 60000 })}
+              onClick={() => setForm({ id: "", name: "OmniRoute", baseUrl: "http://localhost:20128/v1", apiKey: "", modelIdsText: "", timeoutMs: 60000, providerType: "openai", cookie: "" })}
               className="hidden sm:inline-flex rounded-full bg-black text-white px-3 py-1.5 text-xs font-medium"
             >
               Fill OmniRoute
             </button>
-            <button onClick={() => setForm({ id: "", name: "", baseUrl: "", apiKey: "", modelIdsText: "", timeoutMs: 60000 })} className="rounded-full border border-black/10 px-3 py-1.5 text-xs">
+            <button
+              onClick={() => setForm({ id: "", name: "ChatGPT Plus (Web)", baseUrl: "https://chatgpt.com", apiKey: "", modelIdsText: "", timeoutMs: 120000, providerType: "chatgpt-web", cookie: "" })}
+              className="hidden sm:inline-flex rounded-full bg-[#10A37F] text-white px-3 py-1.5 text-xs font-medium"
+            >
+              Fill ChatGPT Web
+            </button>
+            <button onClick={() => setForm({ id: "", name: "", baseUrl: "http://localhost:20128/v1", apiKey: "", modelIdsText: "", timeoutMs: 60000, providerType: "openai", cookie: "" })} className="rounded-full border border-black/10 px-3 py-1.5 text-xs">
               Clear
             </button>
           </div>
         }
       >
         <div className="grid sm:grid-cols-2 gap-4">
+          <label className="space-y-1 sm:col-span-2">
+            <div className="text-xs font-medium text-black/60">Provider type</div>
+            <div className="flex gap-2">
+              <button onClick={() => setForm({ ...form, providerType: "openai", modelIdsText: form.providerType === "chatgpt-web" ? "" : form.modelIdsText })} className={`flex-1 rounded-xl px-3 py-2.5 text-sm font-medium border ${!isWeb ? "bg-[#007AFF] text-white border-[#007AFF]" : "bg-white border-black/10 text-black/60"}`}>OpenAI-compatible (API key)</button>
+              <button onClick={() => setForm({ ...form, providerType: "chatgpt-web", modelIdsText: "" })} className={`flex-1 rounded-xl px-3 py-2.5 text-sm font-medium border ${isWeb ? "bg-[#10A37F] text-white border-[#10A37F]" : "bg-white border-black/10 text-black/60"}`}>ChatGPT Web (Plus cookie)</button>
+            </div>
+            <div className="text-[11px] text-black/40">{isWeb ? "Paste your Plus cookie — no API key needed. Unlocks gpt-5.6 etc." : "Use for OmniRoute, OpenAI, Meta etc. with API key."}</div>
+          </label>
+
           <label className="space-y-1">
             <div className="text-xs font-medium text-black/60">Name</div>
-            <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder="OmniRoute" className="mac-input w-full rounded-xl px-3 py-2.5 text-sm" />
+            <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder={isWeb ? "ChatGPT Plus (Web)" : "OmniRoute"} className="mac-input w-full rounded-xl px-3 py-2.5 text-sm" />
           </label>
           <label className="space-y-1">
-            <div className="text-xs font-medium text-black/60">Base URL</div>
-            <input value={form.baseUrl} onChange={(e) => setForm({ ...form, baseUrl: e.target.value })} placeholder="http://localhost:20128/v1" className="mac-input w-full rounded-xl px-3 py-2.5 text-sm font-mono" />
+            <div className="text-xs font-medium text-black/60">Base URL {isWeb && <span className="text-black/30">(auto)</span>}</div>
+            <input value={form.baseUrl} onChange={(e) => setForm({ ...form, baseUrl: e.target.value })} placeholder={isWeb ? "https://chatgpt.com (auto)" : "http://localhost:20128/v1"} disabled={isWeb} className="mac-input w-full rounded-xl px-3 py-2.5 text-sm font-mono disabled:bg-black/5 disabled:text-black/40" />
           </label>
-          <label className="space-y-1 sm:col-span-2">
-            <div className="text-xs font-medium text-black/60 flex items-center justify-between">
-              API key <button onClick={() => setShowKey(!showKey)} className="text-black/40 hover:text-black/60">{showKey ? <EyeOff size={14} /> : <Eye size={14} />}</button>
-            </div>
-            <input type={showKey ? "text" : "password"} value={form.apiKey} onChange={(e) => setForm({ ...form, apiKey: e.target.value })} placeholder="sk-..." className="mac-input w-full rounded-xl px-3 py-2.5 text-sm font-mono" />
-            <div className="text-[11px] text-black/40">Stored server-side, never shown again. Leave empty on edit to keep.</div>
-          </label>
+
+          {isWeb ? (
+            <label className="space-y-1 sm:col-span-2">
+              <div className="text-xs font-medium text-black/60 flex items-center justify-between">
+                ChatGPT cookie — paste from Cookie Editor <button onClick={() => setShowKey(!showKey)} className="text-black/40 hover:text-black/60">{showKey ? <EyeOff size={14} /> : <Eye size={14} />}</button>
+              </div>
+              <textarea value={form.cookie} onChange={(e) => setForm({ ...form, cookie: e.target.value })} placeholder="__Secure-next-auth.session-token=eyJhbGc...  OR full Cookie header: __Secure-next-auth.session-token.0=...; __Secure-next-auth.session-token.1=...; cf_clearance=...; __cf_bm=..." className="mac-input w-full rounded-xl px-3 py-2.5 text-xs font-mono min-h-[80px]" />
+              <div className="rounded-xl bg-[#F5F5F7] border border-black/5 p-3 space-y-1">
+                <div className="text-[11px] font-semibold text-black/70 flex items-center gap-1"><KeyRound size={10}/> How to get cookie:</div>
+                <ol className="text-[11px] text-black/50 list-decimal pl-4 space-y-0.5">
+                  <li>Login to <a href="https://chatgpt.com" target="_blank" className="text-[#10A37F] underline">chatgpt.com</a> with your Plus account</li>
+                  <li>Install <a href="https://chrome.google.com/webstore/detail/cookie-editor/" target="_blank" className="text-[#007AFF] underline">Cookie Editor</a> extension → open chatgpt.com → click extension → Export → Copy</li>
+                  <li>Or: F12 → Application → Cookies → chatgpt.com → copy <span className="font-mono text-black/70">__Secure-next-auth.session-token</span> (+ .0/.1 if chunked) and <span className="font-mono text-black/70">cf_clearance</span></li>
+                  <li>Paste full cookie header here. Tip: Network tab → any request → Copy Cookie header = best (includes cf_clearance)</li>
+                </ol>
+                <div className="text-[11px] text-amber-600/80">⚠️ Cookie expires in hours/days. If Test fails, re-copy fresh. Never share cookie — gives full account access.</div>
+                <div className="flex gap-2 pt-1 flex-wrap items-center">
+                  <button onClick={onValidateCookie} disabled={validating || !form.cookie.trim()} className="rounded-full bg-white border border-black/10 px-3 py-1.5 text-xs font-medium flex items-center gap-1 disabled:opacity-40">
+                    {validating ? <RefreshCw size={12} className="animate-spin"/> : <ShieldCheck size={12}/>} Validate cookie
+                  </button>
+                  <span className="text-[11px] text-black/30 py-1.5">Checks /api/auth/session</span>
+                  {cookieCheck && (
+                    <span className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium border ${cookieCheck.ok ? "bg-[#34C759]/10 text-[#248A3D] border-[#34C759]/20" : "bg-[#FF3B30]/10 text-[#D70015] border-[#FF3B30]/20"}`}>
+                      {cookieCheck.ok ? <CheckCircle size={12}/> : <AlertTriangle size={12}/>} {cookieCheck.msg.slice(0,80)}
+                    </span>
+                  )}
+                </div>
+                {cookieCheck && !cookieCheck.ok && (
+                  <div className="text-[11px] text-[#D70015] bg-[#FF3B30]/5 border border-[#FF3B30]/10 rounded-lg px-2.5 py-1.5 mt-1">{cookieCheck.msg}</div>
+                )}
+                {cookieCheck && cookieCheck.ok && (
+                  <div className="text-[11px] text-[#248A3D] bg-[#34C759]/5 border border-[#34C759]/10 rounded-lg px-2.5 py-1.5 mt-1">{cookieCheck.msg} — now click Fetch models from ChatGPT below.</div>
+                )}
+              </div>
+            </label>
+          ) : (
+            <label className="space-y-1 sm:col-span-2">
+              <div className="text-xs font-medium text-black/60 flex items-center justify-between">
+                API key <button onClick={() => setShowKey(!showKey)} className="text-black/40 hover:text-black/60">{showKey ? <EyeOff size={14} /> : <Eye size={14} />}</button>
+              </div>
+              <input type={showKey ? "text" : "password"} value={form.apiKey} onChange={(e) => setForm({ ...form, apiKey: e.target.value })} placeholder="sk-..." className="mac-input w-full rounded-xl px-3 py-2.5 text-sm font-mono" />
+              <div className="text-[11px] text-black/40">Stored server-side, never shown again. Leave empty on edit to keep.</div>
+            </label>
+          )}
+
           <label className="sm:col-span-2 space-y-1">
             <div className="text-xs font-medium text-black/60 flex items-center justify-between">
               Model IDs <span className="font-mono text-[11px] text-black/40">{form.modelIdsText.split(/[\n,]+/).filter(Boolean).length} models</span>
             </div>
-            <textarea value={form.modelIdsText} onChange={(e) => setForm({ ...form, modelIdsText: e.target.value })} placeholder={"auto/best-coding\nauto/best-reasoning\nmuse-spark-1.2"} className="mac-input w-full rounded-xl px-3 py-2.5 text-sm font-mono min-h-[96px]" />
+            <textarea value={form.modelIdsText} onChange={(e) => setForm({ ...form, modelIdsText: e.target.value })} placeholder={isWeb ? "gpt-5-6\ngpt-5-6-thinking\ngpt-5-6-pro\ngpt-5-5\ngpt-5-5-thinking" : "auto/best-coding\nauto/best-reasoning\nmuse-spark-1.2"} className="mac-input w-full rounded-xl px-3 py-2.5 text-sm font-mono min-h-[96px]" />
             <div className="flex gap-2">
               <button onClick={() => (window as any).__fetchModels ? (window as any).__fetchModels() : null} style={{ display: "none" }} />
               <button
                 onClick={() => {
-                  // handled via prop onDiscover in parent, but we inline
                   const btn = document.getElementById("fetchBtn") as any;
                   if (btn) btn.click();
                 }}
@@ -538,22 +674,20 @@ function Providers({ providers, form, setForm, onSave, onEdit, fetched, fetchedS
               />
               <button
                 onClick={() => {
-                  // trigger discover via parent handler passed as discovering prop? we call via window event
-                  // fallback: use form values directly via fetch
                   const ev = new CustomEvent("fetchModels");
                   window.dispatchEvent(ev);
                 }}
                 className="hidden"
               />
               <button onClick={() => {
-                  // will be overridden by parent onDiscover, we call it via prop
                   // @ts-ignore
                   if (typeof onDiscover === "function") onDiscover();
                 }} disabled={discovering} className="rounded-full bg-white border border-black/10 px-3 py-1.5 text-xs font-medium flex items-center gap-1">
-                {discovering ? <RefreshCw size={12} className="animate-spin" /> : <Search size={12} />} Fetch models from provider
+                {discovering ? <RefreshCw size={12} className="animate-spin" /> : <Search size={12} />} {isWeb ? "Fetch models from ChatGPT (via cookie)" : "Fetch models from provider"}
               </button>
               <span className="text-xs text-black/40 py-1.5">One per line or comma</span>
             </div>
+            {isWeb && <div className="text-[11px] text-black/40">Fetches curated gpt-5.6/5.5 list + live /backend-api/models via your cookie. Shows 13-18 models.</div>}
           </label>
           <label className="space-y-1">
             <div className="text-xs font-medium text-black/60">Timeout (ms)</div>
@@ -611,12 +745,14 @@ function Providers({ providers, form, setForm, onSave, onEdit, fetched, fetchedS
             providers.map((p: any) => (
               <div key={p.id} className="rounded-2xl border border-black/[.06] bg-white p-4 flex flex-col sm:flex-row gap-4 sm:items-center">
                 <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 flex-wrap">
                     <span className={`w-2 h-2 rounded-full ${p.status === "healthy" ? "bg-[#34C759]" : p.status === "error" ? "bg-[#FF3B30]" : "bg-black/15"}`} />
                     <span className="font-medium text-sm truncate">{p.name}</span>
                     <span className={`text-[11px] px-1.5 py-0.5 rounded-full border ${p.enabled ? "bg-[#34C759]/10 text-[#248A3D] border-[#34C759]/20" : "bg-black/5 text-black/40 border-black/10"}`}>{p.enabled ? "enabled" : "disabled"}</span>
+                    {p.providerType === "chatgpt-web" && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-[#10A37F]/10 text-[#0E7A5F] border border-[#10A37F]/20 font-medium">ChatGPT Web · cookie</span>}
+                    {p.providerType === "openai" && <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-black/5 text-black/40 border border-black/10">API</span>}
                   </div>
-                  <div className="font-mono text-xs text-black/50 truncate mt-1">{p.baseUrl} · {p.modelIds.length} models · {p.timeoutMs}ms</div>
+                  <div className="font-mono text-xs text-black/50 truncate mt-1">{p.baseUrl} · {p.modelIds.length} models · {p.timeoutMs}ms {p.hasCookie && "· cookie ✓"}</div>
                   <div className="font-mono text-[11px] text-black/40 truncate">{p.modelIds.slice(0, 3).join(", ")}{p.modelIds.length > 3 ? ` +${p.modelIds.length - 3}` : ""}</div>
                   {p.lastTestMessage && <div className="text-xs text-black/40 mt-1">{p.lastTestMessage}</div>}
                 </div>
@@ -643,11 +779,30 @@ function Providers({ providers, form, setForm, onSave, onEdit, fetched, fetchedS
   );
 }
 
-function ModelsSection({ allowed, providers, search, setSearch, onToggle, onRemove, onTest, testing }: any) {
+function ModelsSection({ allowed, providers, search, setSearch, onToggle, onRemove, onTest, testing, onRefresh, refreshing }: any) {
   const enabledOnly = allowed.filter((m: any) => m.enabled);
+  const noProviders = providers.length === 0;
   return (
     <div className="space-y-5">
-      <Card title="Enabled for SkyRoute by Emon" subtitle="Only these models are exposed via /v1/models to Claude / VS Code. Disable or delete here." action={<span className="text-xs font-medium text-[#007AFF] bg-[#007AFF]/10 px-2 py-1 rounded-full">{enabledOnly.length} enabled</span>}>
+      <div className="flex items-center justify-between">
+        <div className="text-xs text-black/40">{providers.length} provider(s) · {allowed.length} model(s) in SkyRoute</div>
+        <button
+          onClick={onRefresh}
+          disabled={refreshing || noProviders}
+          title={noProviders ? "Add a provider first" : "Fetch latest models from all enabled providers"}
+          className="inline-flex items-center gap-1.5 rounded-full bg-white border border-black/10 px-3.5 py-1.5 text-xs font-medium hover:bg-black/[.04] disabled:opacity-40 disabled:cursor-not-allowed shadow-sm"
+        >
+          <RefreshCw size={14} className={refreshing ? "animate-spin" : ""} /> {refreshing ? "Refreshing…" : "Refresh models"}
+        </button>
+      </div>
+      <Card title="Enabled for SkyRoute by Emon" subtitle="Only these models are exposed via /v1/models to Claude / VS Code. Disable or delete here." action={
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-medium text-[#007AFF] bg-[#007AFF]/10 px-2 py-1 rounded-full">{enabledOnly.length} enabled</span>
+          <button onClick={onRefresh} disabled={refreshing || noProviders} className="inline-flex items-center gap-1 rounded-full bg-white border border-black/10 px-2.5 py-1 text-xs font-medium hover:bg-black/[.04] disabled:opacity-40">
+            <RefreshCw size={12} className={refreshing ? "animate-spin" : ""} /> Refresh
+          </button>
+        </div>
+      }>
         {enabledOnly.length ? (
           <div className="grid sm:grid-cols-2 gap-3 max-h-[360px] overflow-auto pr-1">
             {enabledOnly.map((m: any) => {
@@ -687,7 +842,14 @@ function ModelsSection({ allowed, providers, search, setSearch, onToggle, onRemo
         )}
       </Card>
 
-      <Card title={`SkyRoute by Emon models · ${allowed.length}`} subtitle="All models added to SkyRoute by Emon. Each box has its own test. Enable to expose." action={<span className="text-xs text-black/40">{allowed.filter((m: any) => m.enabled).length} enabled</span>}>
+      <Card title={`SkyRoute by Emon models · ${allowed.length}`} subtitle="All models added to SkyRoute by Emon. Each box has its own test. Enable to expose." action={
+        <div className="flex items-center gap-2">
+          <span className="text-xs text-black/40">{allowed.filter((m: any) => m.enabled).length} enabled</span>
+          <button onClick={onRefresh} disabled={refreshing || noProviders} className="inline-flex items-center gap-1 rounded-full bg-white border border-black/10 px-2.5 py-1 text-xs font-medium hover:bg-black/[.04] disabled:opacity-40">
+            <RefreshCw size={12} className={refreshing ? "animate-spin" : ""} /> Refresh
+          </button>
+        </div>
+      }>
         <div className="flex items-center gap-2 mb-4">
           <div className="relative flex-1">
             <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 opacity-30" />
@@ -740,16 +902,35 @@ function ModelsSection({ allowed, providers, search, setSearch, onToggle, onRemo
   );
 }
 
-function EnabledModelsSection({ allowed, providers, onToggle, onRemove, onTest, testing }: any) {
+function EnabledModelsSection({ allowed, providers, onToggle, onRemove, onTest, testing, onRefresh, refreshing }: any) {
   const [q, setQ] = useState("");
   const filtered = useMemo(() => {
     if (!q) return allowed;
     const l = q.toLowerCase();
     return allowed.filter((m: any) => m.modelId.toLowerCase().includes(l) || (m.alias && m.alias.toLowerCase().includes(l)) || (providers.find((p: any) => p.id === m.providerId)?.name.toLowerCase().includes(l) ?? false));
   }, [allowed, providers, q]);
+  const noProviders = providers.length === 0;
   return (
     <div className="space-y-5">
-      <Card title="Enabled Models" subtitle="Only these models are exposed via /v1/models to Claude / VS Code. Disable or delete to hide." action={<span className="text-xs font-medium text-[#34C759] bg-[#34C759]/10 px-2 py-1 rounded-full">{allowed.length} enabled</span>}>
+      <div className="flex items-center justify-between">
+        <div className="text-xs text-black/40">{providers.length} provider(s) · {allowed.length} enabled model(s)</div>
+        <button
+          onClick={onRefresh}
+          disabled={refreshing || noProviders}
+          title={noProviders ? "Add a provider first" : "Fetch latest models from all enabled providers"}
+          className="inline-flex items-center gap-1.5 rounded-full bg-white border border-black/10 px-3.5 py-1.5 text-xs font-medium hover:bg-black/[.04] disabled:opacity-40 disabled:cursor-not-allowed shadow-sm"
+        >
+          <RefreshCw size={14} className={refreshing ? "animate-spin" : ""} /> {refreshing ? "Refreshing…" : "Refresh models"}
+        </button>
+      </div>
+      <Card title="Enabled Models" subtitle="Only these models are exposed via /v1/models to Claude / VS Code. Disable or delete to hide." action={
+        <div className="flex items-center gap-2">
+          <span className="text-xs font-medium text-[#34C759] bg-[#34C759]/10 px-2 py-1 rounded-full">{allowed.length} enabled</span>
+          <button onClick={onRefresh} disabled={refreshing || noProviders} className="inline-flex items-center gap-1 rounded-full bg-white border border-black/10 px-2.5 py-1 text-xs font-medium hover:bg-black/[.04] disabled:opacity-40">
+            <RefreshCw size={12} className={refreshing ? "animate-spin" : ""} /> Refresh
+          </button>
+        </div>
+      }>
         <div className="flex items-center gap-2 mb-4">
           <div className="relative flex-1">
             <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 opacity-30" />

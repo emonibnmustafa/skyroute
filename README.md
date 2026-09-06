@@ -9,10 +9,6 @@
 
 <p align="center"><b>One base URL for Claude Desktop, VS Code, opencode & every AI coding agent.</b><br/>Add OmniRoute, Meta, OpenAI — expose only the models you enable as <code>opus-*</code> for Claude.</p>
 
-<p align="center">
-  <img src="docs/screenshot.png" width="860" alt="SkyRoute UI" />
-</p>
-
 ---
 
 ## ✨ What it does
@@ -42,7 +38,6 @@ launchctl load ~/Library/LaunchAgents/com.skyroute.gateway.plist
 NODE_ENV=production NODE_EXTRA_CA_CERTS=/etc/ssl/cert.pem PORT=3000 node dist/index.js
 
 open http://127.0.0.1:3000
-# or double-click Desktop/SkyRoute.app
 ```
 
 **Claude Desktop:**
@@ -100,16 +95,12 @@ Claude Desktop / VS Code
 
 ## 📦 Mac app (24h)
 
-**Native app:** `Desktop/SkyRoute.app` / `/Applications/SkyRoute.app` (59KB Swift, `com.skyroute.app`, `AppIcon` gradient hub). Double-click anytime — shows gateway UI, no Chrome tab.
-
-**24h daemon:** `~/Library/LaunchAgents/com.skyroute.gateway.plist`
-```xml
-Label com.skyroute.gateway
-ProgramArguments /opt/homebrew/bin/node /path/to/skyroute/dist/index.js
-Environment NODE_ENV=production NODE_EXTRA_CA_CERTS=/etc/ssl/cert.pem PORT=3000
-RunAtLoad + KeepAlive (restarts on crash)
+**24h daemon:** [`mac/com.skyroute.gateway.plist`](mac/com.skyroute.gateway.plist) — edit the checkout path + node binary inside, then:
+```bash
+cp mac/com.skyroute.gateway.plist ~/Library/LaunchAgents/
+launchctl load ~/Library/LaunchAgents/com.skyroute.gateway.plist
 ```
-Install: `launchctl load ~/Library/LaunchAgents/com.skyroute.gateway.plist` — survives reboot/power loss, runs even if app closed. Logs `/tmp/skyroute.log`. Check: `launchctl list | grep skyroute`.
+`RunAtLoad + KeepAlive` restarts on crash and survives reboot/power loss, runs even if the UI is closed. Logs `/tmp/skyroute.log`. Check: `launchctl list | grep skyroute`.
 
 ---
 
@@ -125,6 +116,54 @@ Install: `launchctl load ~/Library/LaunchAgents/com.skyroute.gateway.plist` — 
 ## 🤝 Contributing
 
 PRs welcome. `npm run dev` (`NODE_ENV=development tsx watch server/_core/index.ts` + Vite). Please run `npm run check` and `npm test` before push.
+
+---
+
+## 👨‍💻 About Me
+
+<p align="center">
+  <a href="https://github.com/emonibnmustafa">
+    <img src="https://readme-typing-svg.demolab.com?font=Fira+Code&weight=600&size=22&pause=1000&center=true&vCenter=true&width=480&lines=Hi+%F0%9F%91%8B%2C+I'm+Emon;Local-first+AI+tooling+builder;Mac+native+%E2%80%A2+Gateways+%E2%80%A2+DX" alt="Typing intro" />
+  </a>
+</p>
+
+<p align="center">
+  <a href="https://github.com/emonibnmustafa?tab=followers"><img src="https://img.shields.io/github/followers/emonibnmustafa?label=Follow&style=social" alt="GitHub followers" /></a>
+  <a href="https://github.com/emonibnmustafa/skyroute"><img src="https://img.shields.io/github/stars/emonibnmustafa/skyroute?style=social" alt="Repo stars" /></a>
+  <img src="https://komarev.com/ghpvc/?username=emonibnmustafa&color=007AFF&style=flat&label=Profile+views" alt="Profile views" />
+</p>
+
+<p align="center">I build <b>local-first developer tools</b> — gateways, Mac apps, and agent infrastructure that keep data on your machine. <b>SkyRoute</b> is my answer to model sprawl: one gateway, every provider, zero cloud.</p>
+
+<p align="center">
+  <a href="https://github.com/emonibnmustafa"><img src="https://img.shields.io/badge/GitHub-emonibnmustafa-1d1d1f?style=for-the-badge&logo=github&logoColor=white" alt="GitHub" /></a>
+</p>
+
+### 🛠️ Tech I work with
+
+<p align="center">
+  <img src="https://skillicons.dev/icons?i=ts,react,nodejs,express,swift,tailwind,vite,python,git,github,vscode&theme=light" alt="Tech stack" />
+</p>
+
+### 📊 GitHub stats
+
+<p align="center">
+  <img src="https://github-readme-stats.vercel.app/api?username=emonibnmustafa&show_icons=true&theme=default&hide_border=true&bg_color=ffffff&title_color=007AFF&icon_color=007AFF" height="165" alt="GitHub stats" />
+  <img src="https://github-readme-stats.vercel.app/api/top-langs/?username=emonibnmustafa&layout=compact&theme=default&hide_border=true&bg_color=ffffff&title_color=007AFF" height="165" alt="Top languages" />
+</p>
+
+<p align="center">
+  <img src="https://streak-stats.demolab.com?user=emonibnmustafa&theme=default&hide_border=true&background=ffffff&ring=007AFF&fire=FF5F57&currStreakLabel=007AFF" height="165" alt="Contribution streak" />
+</p>
+
+### 🌱 What I'm focused on
+
+- 🔌 **AI gateways** — OpenAI ↔ Anthropic translation, streaming, tool_use, failover routing
+- 🖥️ **Mac-native apps** — Swift/WKWebView wrappers, LaunchAgent daemons, menu-bar DX
+- 🔒 **Privacy by default** — local-only data, hashed credentials, no telemetry
+- 🤖 **Agent infrastructure** — one endpoint for Claude, VS Code, opencode, and every coding agent
+
+<p align="center">💡 <i>Have an idea, found a bug, or want a provider supported? <a href="https://github.com/emonibnmustafa/skyroute/issues">Open an issue</a> — I read every one.</i></p>
 
 ---
 

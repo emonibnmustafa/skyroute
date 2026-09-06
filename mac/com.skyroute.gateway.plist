@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  SkyRoute 24h gateway daemon (macOS LaunchAgent).
+
+  Install:
+    1. Replace /path/to/skyroute below with your checkout path and make sure
+       /opt/homebrew/bin/node exists (or point to your node binary: `which node`).
+    2. cp mac/com.skyroute.gateway.plist ~/Library/LaunchAgents/
+    3. launchctl load ~/Library/LaunchAgents/com.skyroute.gateway.plist
+
+  Logs: /tmp/skyroute.log   Check: launchctl list | grep skyroute
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.skyroute.gateway</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>/path/to/skyroute/dist/index.js</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>NODE_ENV</key>
+    <string>production</string>
+    <key>PORT</key>
+    <string>3000</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/tmp/skyroute.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/skyroute.log</string>
+</dict>
+</plist>
