@@ -3,7 +3,7 @@ import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { publicProcedure, router } from "./_core/trpc";
 import { z } from "zod";
-import { addAllowedModel, createClientKey, deleteCombo, deleteProvider, discoverUpstreamModels, discoverChatGptWebModels, validateChatGptWebCookie, listAllowedModels, listCombos, listKeys, listProviders, removeAllowedModel, snapshot, testAllowedModel, toggleAllowedModel, toggleProvider, testProvider, testProviderModel, upsertCombo, upsertProvider, revokeClientKey, refreshAllModels, refreshProviderModels } from "./gatewayStore";
+import { addAllowedModel, createClientKey, deleteCombo, deleteProvider, discoverUpstreamModels, discoverChatGptWebModels, validateChatGptWebCookie, listAllowedModels, listCombos, listKeys, listProviders, removeAllowedModel, setAllowedModelAlias, snapshot, testAllowedModel, toggleAllowedModel, toggleProvider, testProvider, testProviderModel, upsertCombo, upsertProvider, revokeClientKey, refreshAllModels, refreshProviderModels } from "./gatewayStore";
 
 export const appRouter = router({
     // if you need to use socket.io, read and register route in server/_core/index.ts, all api should start with '/api/' so that the gateway can route correctly
@@ -46,6 +46,7 @@ export const appRouter = router({
     addAllowedModel: publicProcedure.input(z.object({ providerId: z.string(), modelId: z.string(), alias: z.string().optional() })).mutation(({ input }) => addAllowedModel(input)),
     removeAllowedModel: publicProcedure.input(z.object({ id: z.string() })).mutation(({ input }) => { removeAllowedModel(input.id); return { success: true }; }),
     toggleAllowedModel: publicProcedure.input(z.object({ id: z.string(), enabled: z.boolean() })).mutation(({ input }) => toggleAllowedModel(input.id, input.enabled)),
+    setAllowedModelAlias: publicProcedure.input(z.object({ id: z.string(), alias: z.string().max(120) })).mutation(({ input }) => setAllowedModelAlias(input.id, input.alias)),
     testAllowedModel: publicProcedure.input(z.object({ id: z.string() })).mutation(({ input }) => testAllowedModel(input.id)),
     combos: publicProcedure.query(() => listCombos()),
     saveCombo: publicProcedure.input(z.object({ id: z.string().optional(), name: z.string(), alias: z.string(), routes: z.array(z.object({ providerId: z.string(), modelId: z.string() })), enabled: z.boolean().optional() })).mutation(({ input }) => upsertCombo(input)),

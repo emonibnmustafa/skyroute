@@ -160,6 +160,10 @@ export default function Home() {
   });
   const removeAllowed = trpc.gateway.removeAllowedModel.useMutation({ onSuccess: () => allowedQ.refetch() });
   const toggleAllowed = trpc.gateway.toggleAllowedModel.useMutation({ onSuccess: () => allowedQ.refetch() });
+  const setAliasAllowed = (trpc.gateway as any).setAllowedModelAlias.useMutation({
+    onSuccess: () => { allowedQ.refetch(); toast.success("Alias saved"); },
+    onError: (e: any) => toast.error(e.message),
+  });
   const refreshModels = (trpc.gateway as any).refreshModels.useMutation({
     onSuccess: (res: any) => {
       utils.gateway.snapshot.invalidate();
@@ -411,8 +415,8 @@ export default function Home() {
                   cookieCheck={cookieCheck}
                 />
               )}
-              {tab === "models" && <ModelsSection allowed={filteredAllowed} providers={providers} search={allowedSearch} setSearch={setAllowedSearch} onToggle={(id: string, en: boolean) => toggleAllowed.mutate({ id, enabled: en })} onRemove={(id: string) => removeAllowed.mutate({ id })} onTest={(id: string) => testAllowed.mutate({ id })} testing={testAllowed.isPending} onRefresh={() => refreshModels.mutate()} refreshing={refreshModels.isPending} />}
-              {tab === "enabled" && <EnabledModelsSection allowed={allowed.filter((m: any) => m.enabled)} providers={providers} onToggle={(id: string, en: boolean) => toggleAllowed.mutate({ id, enabled: en })} onRemove={(id: string) => removeAllowed.mutate({ id })} onTest={(id: string) => testAllowed.mutate({ id })} testing={testAllowed.isPending} onRefresh={() => refreshModels.mutate()} refreshing={refreshModels.isPending} />}
+              {tab === "models" && <ModelsSection allowed={filteredAllowed} providers={providers} search={allowedSearch} setSearch={setAllowedSearch} onToggle={(id: string, en: boolean) => toggleAllowed.mutate({ id, enabled: en })} onRemove={(id: string) => removeAllowed.mutate({ id })} onTest={(id: string) => testAllowed.mutate({ id })} testing={testAllowed.isPending} onRefresh={() => refreshModels.mutate()} refreshing={refreshModels.isPending} onSetAlias={(id: string, alias: string) => setAliasAllowed.mutate({ id, alias })} />}
+              {tab === "enabled" && <EnabledModelsSection allowed={allowed.filter((m: any) => m.enabled)} providers={providers} onToggle={(id: string, en: boolean) => toggleAllowed.mutate({ id, enabled: en })} onRemove={(id: string) => removeAllowed.mutate({ id })} onTest={(id: string) => testAllowed.mutate({ id })} testing={testAllowed.isPending} onRefresh={() => refreshModels.mutate()} refreshing={refreshModels.isPending} onSetAlias={(id: string, alias: string) => setAliasAllowed.mutate({ id, alias })} />}
               {tab === "aliases" && (
                 <Aliases
                   providers={providers}
@@ -774,7 +778,39 @@ function Providers({ providers, form, setForm, onSave, onEdit, fetched, fetchedS
   );
 }
 
-function ModelsSection({ allowed, providers, search, setSearch, onToggle, onRemove, onTest, testing, onRefresh, refreshing }: any) {
+function AliasEditor({ model, onSetAlias }: any) {
+  const [editing, setEditing] = useState(false);
+  const [value, setValue] = useState(model.alias || "");
+  if (!editing) {
+    return (
+      <button
+        onClick={() => { setValue(model.alias || ""); setEditing(true); }}
+        title="Set a custom routing alias — use when the same model is enabled on two providers with different keys"
+        className="inline-flex items-center gap-1 font-mono text-xs text-black/40 hover:text-[#007AFF] truncate"
+      >
+        <span className="truncate">{model.alias || "no alias"}</span>
+        <Pencil size={11} className="shrink-0 opacity-50" />
+      </button>
+    );
+  }
+  return (
+    <span className="flex items-center gap-1" onClick={(e) => e.stopPropagation()}>
+      <input
+        autoFocus
+        value={value}
+        onChange={(e) => setValue(e.target.value.toLowerCase())}
+        onKeyDown={(e) => { if (e.key === "Enter") { onSetAlias(model.id, value); setEditing(false); } if (e.key === "Escape") setEditing(false); }}
+        placeholder="opus-my-key-name"
+        title="Empty = back to auto opus-* alias"
+        className="w-36 rounded-lg border border-[#007AFF]/40 px-2 py-0.5 font-mono text-xs outline-none"
+      />
+      <button onClick={() => { onSetAlias(model.id, value); setEditing(false); }} className="text-xs text-[#007AFF] font-medium">Save</button>
+      <button onClick={() => setEditing(false)} className="text-xs text-black/40">✕</button>
+    </span>
+  );
+}
+
+function ModelsSection({ allowed, providers, search, setSearch, onToggle, onRemove, onTest, testing, onRefresh, refreshing, onSetAlias }: any) {
   const enabledOnly = allowed.filter((m: any) => m.enabled);
   const noProviders = providers.length === 0;
   return (
@@ -812,7 +848,8 @@ function ModelsSection({ allowed, providers, search, setSearch, onToggle, onRemo
                           <Copy size={12} />
                         </button>
                       </div>
-                      <div className="font-mono text-xs text-black/40 truncate">{m.alias || "no alias"} · {p?.name || "unknown"}</div>
+                      <div className="font-mono text-xs text-black/40 truncate">{p?.name || "unknown"}</div>
+                      <div className="mt-0.5"><AliasEditor model={m} onSetAlias={onSetAlias} /></div>
                       <div className="flex items-center gap-1.5 mt-1">
                         <span className={`w-1.5 h-1.5 rounded-full ${m.status === "healthy" ? "bg-[#34C759]" : m.status === "error" ? "bg-[#FF3B30]" : "bg-black/15"}`} />
                         <span className="text-[11px] text-black/50">{m.status}</span>
@@ -866,7 +903,8 @@ function ModelsSection({ allowed, providers, search, setSearch, onToggle, onRemo
                           <Copy size={12} />
                         </button>
                       </div>
-                      <div className="font-mono text-xs text-black/40 truncate">{m.alias || "no alias"} · {p?.name || "unknown provider"}</div>
+                      <div className="font-mono text-xs text-black/40 truncate">{p?.name || "unknown provider"}</div>
+                      <div className="mt-0.5"><AliasEditor model={m} onSetAlias={onSetAlias} /></div>
                       <div className="flex items-center gap-1.5 mt-1">
                         <span className={`w-1.5 h-1.5 rounded-full ${m.status === "healthy" ? "bg-[#34C759]" : m.status === "error" ? "bg-[#FF3B30]" : "bg-black/15"}`} />
                         <span className="text-[11px] text-black/50">{m.status} {m.lastTestMessage ? `· ${m.lastTestMessage.slice(0, 60)}` : ""}</span>
@@ -897,7 +935,7 @@ function ModelsSection({ allowed, providers, search, setSearch, onToggle, onRemo
   );
 }
 
-function EnabledModelsSection({ allowed, providers, onToggle, onRemove, onTest, testing, onRefresh, refreshing }: any) {
+function EnabledModelsSection({ allowed, providers, onToggle, onRemove, onTest, testing, onRefresh, refreshing, onSetAlias }: any) {
   const [q, setQ] = useState("");
   const filtered = useMemo(() => {
     if (!q) return allowed;
@@ -947,7 +985,8 @@ function EnabledModelsSection({ allowed, providers, onToggle, onRemove, onTest, 
                           <Copy size={12} />
                         </button>
                       </div>
-                      <div className="font-mono text-xs text-black/40 truncate">{m.alias || "no alias"} · {p?.name || "unknown"}</div>
+                      <div className="font-mono text-xs text-black/40 truncate">{p?.name || "unknown"}</div>
+                      <div className="mt-0.5"><AliasEditor model={m} onSetAlias={onSetAlias} /></div>
                       <div className="flex items-center gap-1.5 mt-1">
                         <span className={`w-1.5 h-1.5 rounded-full ${m.status === "healthy" ? "bg-[#34C759]" : m.status === "error" ? "bg-[#FF3B30]" : "bg-[#34C759]"}`} />
                         <span className="text-[11px] text-black/50">{m.status} {m.lastTestMessage ? `· ${m.lastTestMessage.slice(0, 50)}` : ""}</span>

@@ -243,6 +243,48 @@ export function toggleAllowedModel(id: string, enabled: boolean) {
   return m;
 }
 
+function normalizeAliasInput(alias: string): string {
+  return alias.trim().toLowerCase().replace(/[^a-z0-9._-]/g, "-").replace(/-+/g, "-").replace(/^[-.]+|[-.]+$/g, "");
+}
+
+// Set a custom routing alias on one allow-list entry (e.g. give the same
+// upstream model a different name per provider copy so each platform can
+// target its own key). Empty string clears back to the auto opus-* alias.
+export function setAllowedModelAlias(id: string, alias: string) {
+  const m = getAllowedModel(id);
+  if (!m) throw new Error("Allowed model not found");
+  const clean = normalizeAliasInput(alias);
+  if (!clean) {
+    m.alias = undefined;
+    persist();
+    return m;
+  }
+  if (clean.length > 120) throw new Error("Alias too long (max 120 chars)");
+  const lower = clean.toLowerCase();
+  // Must not collide with any other entry's model id, explicit alias, or
+  // auto-derived opus alias, nor with any combo alias.
+  for (const other of state.allowedModels) {
+    if (other.id === id) continue;
+    if (other.modelId.toLowerCase() === lower) throw new Error(`Alias "${clean}" is already used as a model ID`);
+    if (other.alias && other.alias.toLowerCase() === lower) throw new Error(`Alias "${clean}" is already used by another model`);
+    if (toOpusAlias(other.modelId).toLowerCase() === lower) throw new Error(`Alias "${clean}" clashes with the auto alias of ${other.modelId}`);
+  }
+  if (m.modelId.toLowerCase() === lower) throw new Error(`Alias must differ from the model ID`);
+  if (toOpusAlias(m.modelId).toLowerCase() !== lower) {
+    for (const c of state.combos) {
+      if (c.alias.toLowerCase() === lower) throw new Error(`Alias "${clean}" is already used by combo "${c.name}"`);
+    }
+  } else {
+    // Allowing the entry's own auto alias explicitly is a no-op — just clear.
+    m.alias = undefined;
+    persist();
+    return m;
+  }
+  m.alias = clean;
+  persist();
+  return m;
+}
+
 export async function testAllowedModel(id: string) {
   const m = getAllowedModel(id);
   if (!m) throw new Error("Allowed model not found");
@@ -512,7 +554,15 @@ export function listExposedModels(): Array<{ id: string; object: string; owned_b
   for (const c of state.combos.filter(x => x.enabled)) {
     if (!out.some(o => o.id === c.alias)) out.push({ id: c.alias, object: "model", owned_by: `skyroute:${c.name}` });
   }
-  return out;
+  // Dedupe by id (first enabled entry wins) — two provider copies of the
+  // same upstream model must not list the id twice.
+  const seen = new Set<string>();
+  return out.filter(o => {
+    const k = o.id.toLowerCase();
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
 }
 
 export async function resolveRoutes(model: string) {

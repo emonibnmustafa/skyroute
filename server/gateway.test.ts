@@ -1,7 +1,8 @@
 import express from "express";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { registerGatewayRoutes } from "./gatewayRoutes";
-import { authenticateClientKey, createClientKey, listCombos, listProviders, proxyChat, snapshot, testProviderModel, upsertCombo, upsertProvider, _resetForTest } from "./gatewayStore";
+import { authenticateClientKey, createClientKey, listCombos, listExposedModels, listProviders, proxyChat, resolveRoutes, setAllowedModelAlias, snapshot, testProviderModel, toggleAllowedModel, upsertCombo, upsertProvider, _resetForTest } from "./gatewayStore";
+import { addAllowedModel, listAllowedModels } from "./gatewayStore";
 
 describe("local gateway core", () => {
   beforeEach(() => {
@@ -102,5 +103,45 @@ describe("local gateway core", () => {
     const second = upsertProvider({ name: "Second", baseUrl: "https://second.example/v1", apiKey: "two", modelId: "two" });
     const combo = upsertCombo({ name: "Fallback", alias: `fallback-${first.id.slice(0, 5)}`, routes: [{ providerId: second.id, modelId: "two" }, { providerId: first.id, modelId: "one" }] });
     expect(listCombos().find(c => c.id === combo.id)?.routes.map(route => route.providerId)).toEqual([second.id, first.id]);
+  });
+
+  it("routes two provider copies of the same model via distinct custom aliases", async () => {
+    const first = upsertProvider({ name: "Meta", baseUrl: "https://meta.example/v1", apiKey: "key-a", modelId: "muse-spark" });
+    const second = upsertProvider({ name: "MetaOpenclaw", baseUrl: "https://claw.example/v1", apiKey: "key-b", modelId: "muse-spark" });
+    const entryA = addAllowedModel({ providerId: first.id, modelId: "muse-spark" });
+    const entryB = addAllowedModel({ providerId: second.id, modelId: "muse-spark" });
+    toggleAllowedModel(entryA.id, true);
+    toggleAllowedModel(entryB.id, true);
+    setAllowedModelAlias(entryA.id, "opus-spark-key-a");
+    setAllowedModelAlias(entryB.id, "opus-spark-key-b");
+    const routeA = await resolveRoutes("opus-spark-key-a");
+    const routeB = await resolveRoutes("opus-spark-key-b");
+    expect(routeA[0]?.provider?.id).toBe(first.id);
+    expect(routeA[0]?.model).toBe("muse-spark");
+    expect(routeB[0]?.provider?.id).toBe(second.id);
+    expect(routeB[0]?.model).toBe("muse-spark");
+    // Raw id and auto alias still resolve deterministically to the first copy.
+    expect((await resolveRoutes("muse-spark"))[0]?.provider?.id).toBe(first.id);
+    expect((await resolveRoutes("opus-muse-spark"))[0]?.provider?.id).toBe(first.id);
+    // /v1/models must not list the duplicate id twice.
+    const ids = listExposedModels().map(m => m.id);
+    expect(ids.filter(id => id === "muse-spark")).toHaveLength(1);
+    expect(ids).toEqual(expect.arrayContaining(["muse-spark", "opus-spark-key-a", "opus-spark-key-b"]));
+    expect(listAllowedModels().find(m => m.id === entryA.id)?.alias).toBe("opus-spark-key-a");
+  });
+
+  it("rejects custom aliases that collide and clears back to auto alias", () => {
+    const first = upsertProvider({ name: "P1", baseUrl: "https://p1.example/v1", apiKey: "k", modelId: "alpha" });
+    const second = upsertProvider({ name: "P2", baseUrl: "https://p2.example/v1", apiKey: "k", modelId: "beta" });
+    const entryA = addAllowedModel({ providerId: first.id, modelId: "alpha" });
+    const entryB = addAllowedModel({ providerId: second.id, modelId: "beta" });
+    expect(() => setAllowedModelAlias(entryB.id, "alpha")).toThrow("already used as a model ID");
+    setAllowedModelAlias(entryA.id, "opus-custom");
+    expect(() => setAllowedModelAlias(entryB.id, "opus-custom")).toThrow("already used by another model");
+    expect(() => setAllowedModelAlias(entryB.id, "opus-alpha")).toThrow("clashes with the auto alias");
+    upsertCombo({ name: "C", alias: "opus-combo", routes: [{ providerId: first.id, modelId: "alpha" }] });
+    expect(() => setAllowedModelAlias(entryB.id, "opus-combo")).toThrow('already used by combo');
+    setAllowedModelAlias(entryA.id, "   ");
+    expect(listAllowedModels().find(m => m.id === entryA.id)?.alias).toBeUndefined();
   });
 });
