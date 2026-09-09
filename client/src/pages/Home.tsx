@@ -1030,12 +1030,19 @@ function fmt(n: number) {
 
 function UsageSection() {
   const [range, setRange] = useState<"hourly" | "daily">("hourly");
-  const statsQ = (trpc.gateway as any).usageStats.useQuery(undefined, { refetchInterval: 5000 });
-  const eventsQ = (trpc.gateway as any).usageEvents.useQuery({ limit: 100 }, { refetchInterval: 3000 });
+  const [now, setNow] = useState(() => Date.now());
+  const statsQ = (trpc.gateway as any).usageStats.useQuery(undefined, { refetchInterval: 5000, refetchIntervalInBackground: true });
+  const eventsQ = (trpc.gateway as any).usageEvents.useQuery({ limit: 100 }, { refetchInterval: 3000, refetchIntervalInBackground: true });
   const clear = (trpc.gateway as any).clearUsage.useMutation({
     onSuccess: () => { statsQ.refetch(); eventsQ.refetch(); toast.success("Usage history cleared"); },
     onError: (e: any) => toast.error(e.message),
   });
+  useEffect(() => {
+    const t = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, []);
+  const manualRefresh = () => { statsQ.refetch(); eventsQ.refetch(); setNow(Date.now()); };
+  const updatedAgo = Math.max(0, Math.round((now - (statsQ.dataUpdatedAt || now)) / 1000));
   const stats = statsQ.data;
   const t = stats?.totals ?? { requests: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0, errors: 0, avgLatencyMs: 0 };
   const series = range === "hourly" ? (stats?.hourly ?? []) : (stats?.daily ?? []);
@@ -1048,6 +1055,19 @@ function UsageSection() {
   ];
   return (
     <div className="space-y-5">
+      <div className="flex items-center justify-between">
+        <div className="inline-flex items-center gap-1.5 rounded-full bg-[#34C759]/10 text-[#248A3D] border border-[#34C759]/20 px-2.5 py-1 text-[11px] font-medium">
+          <span className="w-1.5 h-1.5 rounded-full bg-[#34C759] animate-pulse" />
+          Live · updated {updatedAgo}s ago · auto-refresh 5s
+        </div>
+        <button
+          onClick={manualRefresh}
+          title="Refresh usage data now"
+          className="inline-flex items-center gap-1.5 rounded-full bg-white border border-black/10 px-3.5 py-1.5 text-xs font-medium hover:bg-black/[.04] shadow-sm"
+        >
+          <RefreshCw size={14} className={statsQ.isFetching || eventsQ.isFetching ? "animate-spin" : ""} /> Refresh
+        </button>
+      </div>
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         {cards.map((c) => (
           <div key={c.label} className="mac-card rounded-2xl p-4">
