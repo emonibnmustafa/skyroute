@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Express, Request, Response } from "express";
-import { authenticateClientKey, proxyChat, resolveRoutes, snapshot, getProvider, listExposedModels, listOpusAliases } from "./gatewayStore";
+import { authenticateClientKey, estimateTokens, getKeyPrefix, logUsage, proxyChat, resolveRoutes, snapshot, getProvider, listExposedModels, listOpusAliases } from "./gatewayStore";
 
 function bearer(req: Request) { return req.headers.authorization?.replace(/^Bearer\s+/i, "") || (req.headers["x-api-key"] as string | undefined) || (req.headers["api-key"] as string | undefined); }
 function requireKey(req: Request, res: Response) { if (authenticateClientKey(bearer(req))) return true; res.status(401).json({ error: { message: "Valid bearer API key required", type: "authentication_error" } }); return false; }
@@ -153,11 +153,21 @@ export function registerGatewayRoutes(app: Express) {
 
   app.post("/v1/messages", async (req, res) => {
     if (!requireKey(req, res)) return;
+    const startedAt = Date.now();
+    const keyPrefix = getKeyPrefix(bearer(req));
     const body = (req.body ?? {}) as Record<string, unknown>;
     const requestedModel = typeof body.model === "string" ? body.model : "";
-    if (!requestedModel) return res.status(400).json({ type: "error", error: { type: "invalid_request_error", message: "model is required" } });
+    const inputEst = estimateTokens(JSON.stringify((body as any).messages ?? body));
+    const baseUsage = { endpoint: "/v1/messages", requestedModel, keyPrefix, stream: body.stream === true, inputTokens: inputEst, latencyMs: 0 };
+    if (!requestedModel) {
+      logUsage({ ...baseUsage, outputTokens: 0, estimated: true, latencyMs: Date.now() - startedAt, ok: false, error: "model is required" });
+      return res.status(400).json({ type: "error", error: { type: "invalid_request_error", message: "model is required" } });
+    }
     const routes = await resolveRoutes(requestedModel);
-    if (!routes.length) return res.status(404).json({ type: "error", error: { type: "not_found_error", message: `Unknown model or combo: ${requestedModel}` } });
+    if (!routes.length) {
+      logUsage({ ...baseUsage, outputTokens: 0, estimated: true, latencyMs: Date.now() - startedAt, ok: false, error: `Unknown model or combo: ${requestedModel}` });
+      return res.status(404).json({ type: "error", error: { type: "not_found_error", message: `Unknown model or combo: ${requestedModel}` } });
+    }
 
     const isStreaming = body.stream === true;
     const openAIMessages = toOpenAIMessages(body);
@@ -243,6 +253,7 @@ export function registerGatewayRoutes(app: Express) {
             res.write(`event: message_delta\ndata: ${JSON.stringify({ type: "message_delta", delta: { stop_reason: stopReason, stop_sequence: null }, usage: { output_tokens: outputTokens } })}\n\n`);
             res.write(`event: message_stop\ndata: ${JSON.stringify({ type: "message_stop" })}\n\n`);
             clearInterval(heartbeat);
+            logUsage({ ...baseUsage, resolvedModel: route.model, providerId: provider.id, providerName: provider.name, inputTokens: inputEst, outputTokens, estimated: true, latencyMs: Date.now() - startedAt, ok: true });
             res.end();
             return;
           } else {
@@ -263,6 +274,7 @@ export function registerGatewayRoutes(app: Express) {
               stop_sequence: null,
               usage: { input_tokens: inputTokens, output_tokens: outputTokens || Math.ceil(JSON.stringify(content).length/4) },
             };
+            logUsage({ ...baseUsage, resolvedModel: route.model, providerId: provider.id, providerName: provider.name, inputTokens: inputTokens || inputEst, outputTokens: outputTokens || estimateTokens(JSON.stringify(content)), estimated: !inputTokens || !outputTokens, latencyMs: Date.now() - startedAt, ok: true });
             res.json(anthropicRes);
             return;
           }
@@ -370,6 +382,7 @@ export function registerGatewayRoutes(app: Express) {
             const stopReason = hasTool ? "tool_use" : "end_turn";
             res.write(`event: message_delta\ndata: ${JSON.stringify({ type: "message_delta", delta: { stop_reason: stopReason, stop_sequence: null }, usage: { output_tokens: outputTokens } })}\n\n`);
             res.write(`event: message_stop\ndata: ${JSON.stringify({ type: "message_stop" })}\n\n`);
+            logUsage({ ...baseUsage, resolvedModel: route.model, providerId: provider.id, providerName: provider.name, inputTokens: inputEst, outputTokens, estimated: true, latencyMs: Date.now() - startedAt, ok: true });
             res.end();
             return;
           } else {
@@ -398,6 +411,7 @@ export function registerGatewayRoutes(app: Express) {
               stop_sequence: null,
               usage: { input_tokens: inputTokens, output_tokens: outputTokens || Math.ceil(JSON.stringify(content).length / 4) },
             };
+            logUsage({ ...baseUsage, resolvedModel: route.model, providerId: provider.id, providerName: provider.name, inputTokens: inputTokens || inputEst, outputTokens: outputTokens || estimateTokens(JSON.stringify(content)), estimated: !inputTokens || !outputTokens, latencyMs: Date.now() - startedAt, ok: true });
             res.json(anthropicRes);
             return;
           }
@@ -411,28 +425,60 @@ export function registerGatewayRoutes(app: Express) {
         clearTimeout(timeout);
       }
     }
-    if (!res.headersSent) res.status(502).json({ type: "error", error: { type: "api_error", message: `All routes failed. ${lastError}` } });
+    if (!res.headersSent) {
+      logUsage({ ...baseUsage, outputTokens: 0, estimated: true, latencyMs: Date.now() - startedAt, ok: false, error: lastError });
+      res.status(502).json({ type: "error", error: { type: "api_error", message: `All routes failed. ${lastError}` } });
+    }
     else res.end();
   });
 
   app.post("/v1/chat/completions", async (req, res) => {
     if (!requireKey(req, res)) return;
+    const startedAt = Date.now();
+    const keyPrefix = getKeyPrefix(bearer(req));
     const body = (req.body ?? {}) as Record<string, unknown>;
     const model = typeof body.model === "string" ? body.model : "";
-    if (!model) return res.status(400).json({ error: { message: "model is required", type: "invalid_request_error" } });
+    const inputEst = estimateTokens(JSON.stringify((body as any).messages ?? body));
+    const baseUsage = { endpoint: "/v1/chat/completions", requestedModel: model, keyPrefix, stream: body.stream === true, inputTokens: inputEst, latencyMs: 0 };
+    if (!model) {
+      logUsage({ ...baseUsage, outputTokens: 0, estimated: true, latencyMs: Date.now() - startedAt, ok: false, error: "model is required" });
+      return res.status(400).json({ error: { message: "model is required", type: "invalid_request_error" } });
+    }
     const routes = await resolveRoutes(model);
-    if (!routes.length) return res.status(404).json({ error: { message: `Unknown model or combo: ${model}`, type: "invalid_request_error" } });
+    if (!routes.length) {
+      logUsage({ ...baseUsage, outputTokens: 0, estimated: true, latencyMs: Date.now() - startedAt, ok: false, error: `Unknown model or combo: ${model}` });
+      return res.status(404).json({ error: { message: `Unknown model or combo: ${model}`, type: "invalid_request_error" } });
+    }
+    const firstRoute = routes[0] as any;
+    const routeInfo = { resolvedModel: firstRoute.model as string | undefined, providerId: firstRoute.provider?.id as string | undefined, providerName: firstRoute.provider?.name as string | undefined };
     const streaming = body.stream === true;
     try {
       if (streaming) {
         res.status(200).set({ "Content-Type": "text/event-stream", "Cache-Control": "no-cache", Connection: "keep-alive" });
-        await proxyChat(model, body, chunk => res.write(Buffer.from(chunk)));
+        // Passthrough streams hide token counts — estimate output from SSE payload size.
+        let sseChars = 0;
+        await proxyChat(model, body, chunk => {
+          const text = Buffer.from(chunk).toString("utf-8");
+          for (const line of text.split("\n")) {
+            const t = line.trim();
+            if (t.startsWith("data:") && !t.includes("[DONE]")) sseChars += t.slice(5).length;
+          }
+          res.write(Buffer.from(chunk));
+        });
         res.end();
+        logUsage({ ...baseUsage, ...routeInfo, outputTokens: estimateTokens("x".repeat(sseChars)), estimated: true, latencyMs: Date.now() - startedAt, ok: true });
       } else {
-        res.json(await proxyChat(model, body));
+        const result: any = await proxyChat(model, body);
+        const usage = result?.usage ?? {};
+        const inT = usage.prompt_tokens ?? usage.input_tokens ?? 0;
+        const outT = usage.completion_tokens ?? usage.output_tokens ?? 0;
+        res.json(result);
+        logUsage({ ...baseUsage, ...routeInfo, inputTokens: inT || inputEst, outputTokens: outT || estimateTokens(JSON.stringify(result).slice(0, 4000)), estimated: !inT || !outT, latencyMs: Date.now() - startedAt, ok: true });
       }
     } catch (error) {
-      if (!res.headersSent) res.status(502).json({ error: { message: error instanceof Error ? error.message : "Upstream request failed", type: "upstream_error" } });
+      const message = error instanceof Error ? error.message : "Upstream request failed";
+      logUsage({ ...baseUsage, ...routeInfo, outputTokens: 0, estimated: true, latencyMs: Date.now() - startedAt, ok: false, error: message });
+      if (!res.headersSent) res.status(502).json({ error: { message, type: "upstream_error" } });
       else res.end();
     }
   });

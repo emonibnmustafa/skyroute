@@ -1,7 +1,7 @@
 import express from "express";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { registerGatewayRoutes } from "./gatewayRoutes";
-import { authenticateClientKey, createClientKey, listCombos, listExposedModels, listProviders, proxyChat, resolveRoutes, setAllowedModelAlias, snapshot, testProviderModel, toggleAllowedModel, upsertCombo, upsertProvider, _resetForTest } from "./gatewayStore";
+import { authenticateClientKey, clearUsage, createClientKey, estimateTokens, getKeyPrefix, getUsageStats, listCombos, listExposedModels, listProviders, listUsageEvents, logUsage, proxyChat, resolveRoutes, setAllowedModelAlias, snapshot, testProviderModel, toggleAllowedModel, upsertCombo, upsertProvider, _resetForTest } from "./gatewayStore";
 import { addAllowedModel, listAllowedModels } from "./gatewayStore";
 
 describe("local gateway core", () => {
@@ -143,5 +143,32 @@ describe("local gateway core", () => {
     expect(() => setAllowedModelAlias(entryB.id, "opus-combo")).toThrow('already used by combo');
     setAllowedModelAlias(entryA.id, "   ");
     expect(listAllowedModels().find(m => m.id === entryA.id)?.alias).toBeUndefined();
+  });
+
+  it("tracks token usage per provider and model with time buckets", () => {
+    const p = upsertProvider({ name: "Metered", baseUrl: "https://m.example/v1", apiKey: "k", modelId: "m1" });
+    const key = createClientKey("Claude");
+    const now = Date.now();
+    logUsage({ at: now - 1000, endpoint: "/v1/messages", requestedModel: "opus-m1", resolvedModel: "m1", providerId: p.id, providerName: "Metered", keyPrefix: key.prefix, stream: false, inputTokens: 100, outputTokens: 50, estimated: false, latencyMs: 200, ok: true });
+    logUsage({ at: now - 25 * 3600_000, endpoint: "/v1/chat/completions", requestedModel: "opus-m1", resolvedModel: "m1", providerId: p.id, providerName: "Metered", keyPrefix: key.prefix, stream: true, inputTokens: 10, outputTokens: 5, estimated: true, latencyMs: 100, ok: true });
+    logUsage({ at: now - 2000, endpoint: "/v1/messages", requestedModel: "nope", stream: false, inputTokens: 5, outputTokens: 0, estimated: true, latencyMs: 10, ok: false, error: "Unknown model" });
+    const stats = getUsageStats();
+    expect(stats.totals.requests).toBe(3);
+    expect(stats.totals.inputTokens).toBe(115);
+    expect(stats.totals.outputTokens).toBe(55);
+    expect(stats.totals.errors).toBe(1);
+    expect(stats.totals.avgLatencyMs).toBe(Math.round(310 / 3));
+    expect(stats.byProvider[0]).toMatchObject({ providerName: "Metered", requests: 2, totalTokens: 165 });
+    expect(stats.byProvider.find(x => x.providerId === "unrouted")?.requests).toBe(1);
+    expect(stats.byModel.find(x => x.model === "opus-m1")?.totalTokens).toBe(165);
+    expect(stats.hourly.reduce((a: number, b: any) => a + b.requests, 0)).toBe(2);
+    expect(stats.daily.reduce((a: number, b: any) => a + b.requests, 0)).toBe(3);
+    expect(listUsageEvents(2).map(e => e.requestedModel)).toEqual(["nope", "opus-m1"]);
+    expect(getKeyPrefix(key.secret)).toBe(key.prefix);
+    expect(getKeyPrefix("lr_invalid")).toBeUndefined();
+    expect(estimateTokens("abcd")).toBe(1);
+    clearUsage();
+    expect(getUsageStats().totals.requests).toBe(0);
+    expect(listUsageEvents()).toEqual([]);
   });
 });

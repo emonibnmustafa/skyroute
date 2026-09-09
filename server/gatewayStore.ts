@@ -40,11 +40,31 @@ type AllowedModel = {
   createdAt: number;
 };
 
-type State = { providers: Provider[]; combos: Combo[]; keys: ClientKey[]; allowedModels: AllowedModel[] };
+export type UsageEvent = {
+  id: string;
+  at: number;
+  endpoint: string;
+  requestedModel: string;
+  resolvedModel?: string;
+  providerId?: string;
+  providerName?: string;
+  keyPrefix?: string;
+  stream: boolean;
+  inputTokens: number;
+  outputTokens: number;
+  estimated: boolean;
+  latencyMs: number;
+  ok: boolean;
+  error?: string;
+};
+
+const MAX_USAGE_EVENTS = 1000;
+
+type State = { providers: Provider[]; combos: Combo[]; keys: ClientKey[]; allowedModels: AllowedModel[]; usage: UsageEvent[] };
 
 const dataFile = process.env.SKYROUTE_DATA_FILE || process.env.LOCALROUTE_DATA_FILE || path.join(process.cwd(), "skyroute-data.json");
 const legacyDataFile = path.join(process.cwd(), "localroute-data.json");
-const state: State = { providers: [], combos: [], keys: [], allowedModels: [] };
+const state: State = { providers: [], combos: [], keys: [], allowedModels: [], usage: [] };
 if (!existsSync(dataFile) && existsSync(legacyDataFile)) { try { const legacy = readFileSync(legacyDataFile, "utf8"); writeFileSync(dataFile, legacy); console.log("[SkyRoute] Migrated legacy localroute-data.json to skyroute-data.json"); } catch {} }
 if (existsSync(dataFile)) {
   try {
@@ -85,6 +105,10 @@ if (existsSync(dataFile)) {
       seen2.add(k);
       return true;
     });
+    const rawUsage = (raw as any).usage;
+    state.usage = Array.isArray(rawUsage)
+      ? rawUsage.filter((e: any) => e && typeof e.at === "number").slice(-MAX_USAGE_EVENTS)
+      : [];
   } catch { console.warn("[SkyRoute] Could not read local data file; starting empty"); }
 }
 
@@ -94,6 +118,23 @@ function toOpusAlias(modelId: string): string {
   return `opus-${normalized}`;
 }
 function persist() { if (process.env.VITEST) return; try { writeFileSync(dataFile, JSON.stringify(state, null, 2), { mode: 0o600 }); } catch (error) { console.warn("[SkyRoute] Could not persist data:", error); } }
+
+// Usage events fire per request — don't rewrite the data file synchronously
+// each time. Mark dirty and flush at most every 5s.
+let usageDirty = false;
+let usageFlushTimer: ReturnType<typeof setTimeout> | null = null;
+function scheduleUsagePersist() {
+  if (process.env.VITEST) return;
+  usageDirty = true;
+  if (usageFlushTimer) return;
+  usageFlushTimer = setTimeout(() => {
+    usageFlushTimer = null;
+    if (!usageDirty) return;
+    usageDirty = false;
+    persist();
+  }, 5000);
+  if (typeof (usageFlushTimer as any).unref === "function") (usageFlushTimer as any).unref();
+}
 
 export function listProviders() {
   return state.providers.map(({ apiKey: _apiKey, cookie: _cookie, ...provider }) => ({
@@ -334,7 +375,108 @@ export async function testAllowedModel(id: string) {
 }
 
 export function snapshot() { return { providers: listProviders(), combos: listCombos(), keys: listKeys(), allowedModels: listAllowedModels() }; }
-export function _resetForTest() { state.providers = []; state.combos = []; state.keys = []; state.allowedModels = []; }
+export function _resetForTest() { state.providers = []; state.combos = []; state.keys = []; state.allowedModels = []; state.usage = []; }
+
+export function estimateTokens(text: string): number {
+  if (!text) return 0;
+  return Math.max(0, Math.ceil(text.length / 4));
+}
+
+export function getKeyPrefix(value: string | undefined): string | undefined {
+  if (!value) return undefined;
+  const key = state.keys.find(k => k.hash === hashKey(value));
+  return key?.prefix;
+}
+
+export function logUsage(input: Omit<UsageEvent, "id" | "at"> & { at?: number }) {
+  const event: UsageEvent = {
+    ...input,
+    id: randomUUID(),
+    at: typeof input.at === "number" ? input.at : Date.now(),
+  };
+  state.usage.push(event);
+  if (state.usage.length > MAX_USAGE_EVENTS) state.usage.splice(0, state.usage.length - MAX_USAGE_EVENTS);
+  scheduleUsagePersist();
+  return event;
+}
+
+export function listUsageEvents(limit = 100) {
+  const n = Math.max(1, Math.min(500, Math.floor(limit) || 100));
+  return state.usage.slice(-n).reverse();
+}
+
+export function clearUsage() {
+  state.usage = [];
+  persist();
+  return { success: true };
+}
+
+function emptyBucket(at: number, label: string) {
+  return { at, label, requests: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0, errors: 0 };
+}
+
+export function getUsageStats() {
+  const totals = { requests: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0, errors: 0, latencySum: 0 };
+  const byProvider = new Map<string, { providerId: string; providerName: string; requests: number; inputTokens: number; outputTokens: number; totalTokens: number; errors: number }>();
+  const byModel = new Map<string, { model: string; requests: number; inputTokens: number; outputTokens: number; totalTokens: number; errors: number }>();
+
+  const now = Date.now();
+  const hourMs = 3600_000;
+  const dayMs = 24 * hourMs;
+  const hourly = Array.from({ length: 24 }, (_, i) => {
+    const start = Math.floor((now - (23 - i) * hourMs) / hourMs) * hourMs;
+    const d = new Date(start);
+    return { ...emptyBucket(start, `${String(d.getHours()).padStart(2, "0")}:00`), start, end: start + hourMs };
+  });
+  const daily = Array.from({ length: 14 }, (_, i) => {
+    const day = new Date(now - (13 - i) * dayMs);
+    day.setHours(0, 0, 0, 0);
+    const start = day.getTime();
+    return { ...emptyBucket(start, day.toLocaleDateString(undefined, { month: "short", day: "numeric" })), start, end: start + dayMs };
+  });
+
+  for (const e of state.usage) {
+    const total = e.inputTokens + e.outputTokens;
+    totals.requests++;
+    totals.inputTokens += e.inputTokens;
+    totals.outputTokens += e.outputTokens;
+    totals.totalTokens += total;
+    totals.latencySum += e.latencyMs;
+    if (!e.ok) totals.errors++;
+
+    const pid = e.providerId || "unrouted";
+    const p = byProvider.get(pid) || { providerId: pid, providerName: e.providerName || "Unrouted", requests: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0, errors: 0 };
+    p.requests++; p.inputTokens += e.inputTokens; p.outputTokens += e.outputTokens; p.totalTokens += total;
+    if (!e.ok) p.errors++;
+    if (e.providerName) p.providerName = e.providerName;
+    byProvider.set(pid, p);
+
+    const mk = e.requestedModel || "unknown";
+    const m = byModel.get(mk) || { model: mk, requests: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0, errors: 0 };
+    m.requests++; m.inputTokens += e.inputTokens; m.outputTokens += e.outputTokens; m.totalTokens += total;
+    if (!e.ok) m.errors++;
+    byModel.set(mk, m);
+
+    for (const b of hourly) { if (e.at >= b.start && e.at < b.end) { b.requests++; b.inputTokens += e.inputTokens; b.outputTokens += e.outputTokens; b.totalTokens += total; if (!e.ok) b.errors++; break; } }
+    for (const b of daily) { if (e.at >= b.start && e.at < b.end) { b.requests++; b.inputTokens += e.inputTokens; b.outputTokens += e.outputTokens; b.totalTokens += total; if (!e.ok) b.errors++; break; } }
+  }
+
+  const strip = ({ start, end, ...rest }: any) => rest;
+  return {
+    totals: {
+      requests: totals.requests,
+      inputTokens: totals.inputTokens,
+      outputTokens: totals.outputTokens,
+      totalTokens: totals.totalTokens,
+      errors: totals.errors,
+      avgLatencyMs: totals.requests ? Math.round(totals.latencySum / totals.requests) : 0,
+    },
+    byProvider: [...byProvider.values()].sort((a, b) => b.totalTokens - a.totalTokens),
+    byModel: [...byModel.values()].sort((a, b) => b.totalTokens - a.totalTokens),
+    hourly: hourly.map(strip),
+    daily: daily.map(strip),
+  };
+}
 
 export async function testProviderModel(id: string, modelId: string) {
   const provider = getProviderRaw(id); if (!provider || !provider.modelIds.includes(modelId)) throw new Error("Provider model not found");

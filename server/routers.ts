@@ -3,7 +3,7 @@ import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { publicProcedure, router } from "./_core/trpc";
 import { z } from "zod";
-import { addAllowedModel, createClientKey, deleteCombo, deleteProvider, discoverUpstreamModels, discoverChatGptWebModels, validateChatGptWebCookie, listAllowedModels, listCombos, listKeys, listProviders, removeAllowedModel, setAllowedModelAlias, snapshot, testAllowedModel, toggleAllowedModel, toggleProvider, testProvider, testProviderModel, upsertCombo, upsertProvider, revokeClientKey, refreshAllModels, refreshProviderModels } from "./gatewayStore";
+import { addAllowedModel, clearUsage, createClientKey, deleteCombo, deleteProvider, discoverUpstreamModels, discoverChatGptWebModels, getUsageStats, listUsageEvents, validateChatGptWebCookie, listAllowedModels, listCombos, listKeys, listProviders, removeAllowedModel, setAllowedModelAlias, snapshot, testAllowedModel, toggleAllowedModel, toggleProvider, testProvider, testProviderModel, upsertCombo, upsertProvider, revokeClientKey, refreshAllModels, refreshProviderModels } from "./gatewayStore";
 
 export const appRouter = router({
     // if you need to use socket.io, read and register route in server/_core/index.ts, all api should start with '/api/' so that the gateway can route correctly
@@ -54,6 +54,9 @@ export const appRouter = router({
     keys: publicProcedure.query(() => listKeys()),
     createKey: publicProcedure.input(z.object({ name: z.string() })).mutation(({ input }) => createClientKey(input.name)),
     revokeKey: publicProcedure.input(z.object({ id: z.string() })).mutation(({ input }) => { revokeClientKey(input.id); return { success: true }; }),
+    usageStats: publicProcedure.query(() => getUsageStats()),
+    usageEvents: publicProcedure.input(z.object({ limit: z.number().min(1).max(500).optional() }).optional()).query(({ input }) => listUsageEvents(input?.limit ?? 100)),
+    clearUsage: publicProcedure.mutation(() => clearUsage()),
     endpoint: publicProcedure.query(() => ({ baseUrl: "http://127.0.0.1:3000", gatewayPath: "/v1", modelsPath: "/v1/models", chatPath: "/v1/chat/completions" })),
   }),
 });

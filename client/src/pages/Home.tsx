@@ -3,6 +3,7 @@ import { trpc } from "@/lib/trpc";
 import {
   Activity,
   AlertTriangle,
+  BarChart3,
   Boxes,
   Check,
   CheckCircle,
@@ -24,8 +25,9 @@ import {
   Sparkles,
 } from "lucide-react";
 import { toast } from "sonner";
+import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
 
-type Tab = "overview" | "providers" | "models" | "enabled" | "aliases" | "keys";
+type Tab = "overview" | "providers" | "models" | "enabled" | "aliases" | "keys" | "usage";
 
 function copy(v: string) {
   navigator.clipboard.writeText(v);
@@ -248,6 +250,7 @@ export default function Home() {
     { id: "enabled", label: "Enabled Models", icon: CheckCircle, count: enabledCount },
     { id: "aliases", label: "Aliases", icon: Sparkles, count: combos.length },
     { id: "keys", label: "Keys", icon: KeyRound, count: keys.length },
+    { id: "usage", label: "Usage", icon: BarChart3 },
   ];
 
   return (
@@ -445,6 +448,7 @@ export default function Home() {
                   endpoint={endpoint}
                 />
               )}
+              {tab === "usage" && <UsageSection />}
             </>
           )}
         </main>
@@ -1011,6 +1015,148 @@ function EnabledModelsSection({ allowed, providers, onToggle, onRemove, onTest, 
           </div>
         ) : (
           <div className="text-sm text-black/40 py-10 text-center border border-dashed border-black/10 rounded-xl">No enabled models — go to Models tab and enable</div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
+function fmt(n: number) {
+  if (!n) return "0";
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(2)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return String(n);
+}
+
+function UsageSection() {
+  const [range, setRange] = useState<"hourly" | "daily">("hourly");
+  const statsQ = (trpc.gateway as any).usageStats.useQuery(undefined, { refetchInterval: 5000 });
+  const eventsQ = (trpc.gateway as any).usageEvents.useQuery({ limit: 100 }, { refetchInterval: 3000 });
+  const clear = (trpc.gateway as any).clearUsage.useMutation({
+    onSuccess: () => { statsQ.refetch(); eventsQ.refetch(); toast.success("Usage history cleared"); },
+    onError: (e: any) => toast.error(e.message),
+  });
+  const stats = statsQ.data;
+  const t = stats?.totals ?? { requests: 0, inputTokens: 0, outputTokens: 0, totalTokens: 0, errors: 0, avgLatencyMs: 0 };
+  const series = range === "hourly" ? (stats?.hourly ?? []) : (stats?.daily ?? []);
+  const events = eventsQ.data ?? [];
+  const cards = [
+    { label: "Total tokens", value: fmt(t.totalTokens), sub: `${fmt(t.inputTokens)} in · ${fmt(t.outputTokens)} out` },
+    { label: "Requests", value: fmt(t.requests), sub: `${t.errors} failed` },
+    { label: "Avg latency", value: t.avgLatencyMs >= 1000 ? `${(t.avgLatencyMs / 1000).toFixed(1)}s` : `${t.avgLatencyMs}ms`, sub: "per request" },
+    { label: "Error rate", value: t.requests ? `${((t.errors / t.requests) * 100).toFixed(1)}%` : "—", sub: "failed / total" },
+  ];
+  return (
+    <div className="space-y-5">
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        {cards.map((c) => (
+          <div key={c.label} className="mac-card rounded-2xl p-4">
+            <div className="text-[11px] font-medium text-black/50">{c.label}</div>
+            <div className="text-2xl font-semibold tracking-tight mt-1">{c.value}</div>
+            <div className="text-[11px] text-black/40 mt-0.5">{c.sub}</div>
+          </div>
+        ))}
+      </div>
+
+      <Card
+        title={`Token usage · last ${range === "hourly" ? "24 hours" : "14 days"}`}
+        subtitle="Live — refreshes every 5s. ~ = estimated (streaming passthrough)."
+        action={
+          <div className="flex items-center gap-1.5">
+            {(["hourly", "daily"] as const).map((r) => (
+              <button key={r} onClick={() => setRange(r)} className={`rounded-full px-3 py-1.5 text-xs font-medium border ${range === r ? "bg-[#007AFF] text-white border-[#007AFF]" : "bg-white border-black/10"}`}>
+                {r === "hourly" ? "Hourly" : "Daily"}
+              </button>
+            ))}
+          </div>
+        }
+      >
+        {series.some((p: any) => p.requests > 0) ? (
+          <div className="h-[220px]">
+            <ResponsiveContainer width="100%" height="100%">
+              <AreaChart data={series} margin={{ top: 5, right: 10, left: -10, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#00000010" />
+                <XAxis dataKey="label" tick={{ fontSize: 10 }} interval="preserveStartEnd" />
+                <YAxis tick={{ fontSize: 10 }} tickFormatter={(v: number) => fmt(v)} />
+                <Tooltip formatter={(v: any, name: any) => [fmt(Number(v)), name]} labelStyle={{ fontSize: 12 }} />
+                <Area type="monotone" dataKey="totalTokens" name="tokens" stroke="#007AFF" fill="#007AFF22" strokeWidth={2} />
+                <Area type="monotone" dataKey="requests" name="requests" stroke="#34C759" fill="#34C75918" strokeWidth={1.5} />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+        ) : (
+          <div className="text-sm text-black/40 py-8 text-center border border-dashed border-black/10 rounded-xl">No gateway traffic yet — send a request from Claude / VS Code and watch it land here.</div>
+        )}
+      </Card>
+
+      <div className="grid lg:grid-cols-2 gap-5">
+        <Card title="Per provider" subtitle="Tokens routed through each upstream key">
+          {(stats?.byProvider ?? []).length ? (
+            <div className="space-y-2 max-h-[260px] overflow-auto pr-1">
+              {(stats.byProvider as any[]).map((p: any) => (
+                <div key={p.providerId} className="flex items-center justify-between rounded-xl border border-black/5 bg-white px-3 py-2.5">
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium truncate">{p.providerName}</div>
+                    <div className="font-mono text-[11px] text-black/40">{fmt(p.requests)} req{p.errors ? ` · ${p.errors} err` : ""}</div>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <div className="font-mono text-sm font-semibold">{fmt(p.totalTokens)}</div>
+                    <div className="font-mono text-[11px] text-black/40">{fmt(p.inputTokens)}↑ {fmt(p.outputTokens)}↓</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="text-sm text-black/40 py-6 text-center">No data yet</div>
+          )}
+        </Card>
+        <Card title="Per model" subtitle="Requested model names as clients sent them">
+          {(stats?.byModel ?? []).length ? (
+            <div className="space-y-2 max-h-[260px] overflow-auto pr-1">
+              {(stats.byModel as any[]).map((m: any) => (
+                <div key={m.model} className="flex items-center justify-between rounded-xl border border-black/5 bg-white px-3 py-2.5">
+                  <div className="min-w-0">
+                    <div className="font-mono text-[13px] font-medium truncate">{m.model}</div>
+                    <div className="font-mono text-[11px] text-black/40">{fmt(m.requests)} req{m.errors ? ` · ${m.errors} err` : ""}</div>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <div className="font-mono text-sm font-semibold">{fmt(m.totalTokens)}</div>
+                    <div className="font-mono text-[11px] text-black/40">{fmt(m.inputTokens)}↑ {fmt(m.outputTokens)}↓</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="text-sm text-black/40 py-6 text-center">No data yet</div>
+          )}
+        </Card>
+      </div>
+
+      <Card
+        title={`Live request log · ${events.length}`}
+        subtitle="Newest first — refreshes every 3s"
+        action={
+          <button onClick={() => clear.mutate()} className="rounded-full bg-white border border-black/10 px-3 py-1.5 text-xs hover:bg-[#FF3B30]/10 hover:text-[#FF3B30] hover:border-[#FF3B30]/20">
+            Clear
+          </button>
+        }
+      >
+        {events.length ? (
+          <div className="space-y-1.5 max-h-[420px] overflow-auto pr-1">
+            {events.map((e: any) => (
+              <div key={e.id} title={e.error || (e.estimated ? "Token counts estimated" : "Token counts from upstream")} className="flex items-center gap-2.5 rounded-xl border border-black/5 bg-white px-3 py-2 text-xs">
+                <span className={`w-2 h-2 rounded-full shrink-0 ${e.ok ? "bg-[#34C759]" : "bg-[#FF3B30]"}`} />
+                <span className="font-mono text-black/40 shrink-0">{new Date(e.at).toLocaleTimeString()}</span>
+                <span className="font-mono px-1.5 py-0.5 rounded bg-black/5 shrink-0">{String(e.endpoint).replace("/v1/", "")}{e.stream ? " ·stream" : ""}</span>
+                <span className="font-mono font-medium truncate flex-1">{e.requestedModel || "—"}{e.resolvedModel && e.resolvedModel !== e.requestedModel ? <span className="text-black/40"> → {e.resolvedModel}</span> : ""}</span>
+                <span className="font-mono text-black/50 shrink-0 hidden sm:inline">{e.providerName || "unrouted"}{e.keyPrefix ? ` · ${e.keyPrefix}…` : ""}</span>
+                <span className="font-mono shrink-0">{fmt(e.inputTokens + e.outputTokens)}{e.estimated ? "~" : ""}</span>
+                <span className="font-mono text-black/40 shrink-0 w-14 text-right">{e.latencyMs >= 1000 ? `${(e.latencyMs / 1000).toFixed(1)}s` : `${e.latencyMs}ms`}</span>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="text-sm text-black/40 py-6 text-center">No requests logged yet</div>
         )}
       </Card>
     </div>
