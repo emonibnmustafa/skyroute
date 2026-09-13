@@ -30,6 +30,9 @@ export default function AnyCodexPanel() {
     refetchInterval: 3000
   });
   const { data: gatewayData } = trpc.gateway.snapshot.useQuery();
+  const allowedQ = trpc.gateway.allowedModels.useQuery(undefined, {
+    refetchInterval: 3000
+  });
 
   const [search, setSearch] = useState("");
   const [activeCategory, setActiveCategory] = useState<"all" | "meta" | "skirt" | "presets">("all");
@@ -107,50 +110,41 @@ export default function AnyCodexPanel() {
     onError: (err) => toast.error(err.message)
   });
 
-  // Collect all models from SkyRoute gateway
-  const availableModels = useMemo(() => {
-    const list: Array<{
-      id: string;
-      name: string;
-      providerId: string;
-      providerName: string;
-      category: "meta" | "skirt" | "other";
-      badge: string;
-    }> = [];
-
+  // Collect ONLY enabled models from SkyRoute gateway
+  const enabledModels = useMemo(() => {
+    const allowed = (allowedQ.data as any[]) ?? [];
     const providers = gatewayData?.providers ?? [];
-    for (const p of providers) {
-      const isMeta = p.name.toLowerCase().includes("meta") || p.baseUrl.includes("meta.ai");
-      const isSkirt = p.name.toLowerCase().includes("skirt") || p.baseUrl.includes("xkiro");
+    const enabledOnly = allowed.filter((m: any) => m.enabled);
 
-      for (const m of p.modelIds || []) {
-        if (!list.some((item) => item.id === m)) {
-          let badge = "Standard";
-          if (isMeta) badge = "Unlimited Free";
-          else if (m.includes("deepseek") || m.includes("coder")) badge = "Code Expert";
-          else if (m.includes("claude") || m.includes("sonnet") || m.includes("opus")) badge = "High Reasoning";
-          else if (m.includes("gpt")) badge = "OpenAI";
+    return enabledOnly.map((m: any) => {
+      const provider = providers.find((p: any) => p.id === m.providerId);
+      const provName = provider?.name || "Provider";
+      const isMeta = provName.toLowerCase().includes("meta") || (provider?.baseUrl || "").includes("meta.ai");
+      const isSkirt = provName.toLowerCase().includes("skirt") || (provider?.baseUrl || "").includes("xkiro");
 
-          list.push({
-            id: m,
-            name: m,
-            providerId: isMeta ? "meta" : p.id,
-            providerName: p.name,
-            category: isMeta ? "meta" : isSkirt ? "skirt" : "other",
-            badge
-          });
-        }
-      }
-    }
+      let badge = "Enabled";
+      if (isMeta) badge = "Unlimited Free";
+      else if (m.modelId.includes("deepseek") || m.modelId.includes("coder")) badge = "Code Expert";
+      else if (m.modelId.includes("claude") || m.modelId.includes("sonnet") || m.modelId.includes("opus")) badge = "High Reasoning";
+      else if (m.modelId.includes("gpt")) badge = "OpenAI";
 
-    return list;
-  }, [gatewayData]);
+      return {
+        id: m.modelId,
+        name: m.modelId,
+        alias: m.alias,
+        providerId: isMeta ? "meta" : (provider?.id || "custom"),
+        providerName: provName,
+        category: isMeta ? ("meta" as const) : isSkirt ? ("skirt" as const) : ("other" as const),
+        badge
+      };
+    });
+  }, [allowedQ.data, gatewayData]);
 
   const presets = status?.presets ?? [];
 
   // Filtered models
   const filteredModels = useMemo(() => {
-    let result = availableModels;
+    let result = enabledModels;
     if (activeCategory === "meta") {
       result = result.filter((m) => m.category === "meta");
     } else if (activeCategory === "skirt") {
@@ -163,11 +157,12 @@ export default function AnyCodexPanel() {
         (m) =>
           m.id.toLowerCase().includes(s) ||
           m.name.toLowerCase().includes(s) ||
+          (m.alias && m.alias.toLowerCase().includes(s)) ||
           m.providerName.toLowerCase().includes(s)
       );
     }
     return result;
-  }, [availableModels, activeCategory, search]);
+  }, [enabledModels, activeCategory, search]);
 
   const filteredPresets = useMemo(() => {
     if (!search.trim()) return presets;
@@ -307,10 +302,10 @@ export default function AnyCodexPanel() {
           <div>
             <h3 className="text-base font-semibold text-[#1d1d1f] flex items-center gap-2">
               <Cpu size={18} className="text-[#007AFF]" />
-              Model Switcher & Presets
+              Enabled Models for AnyCodex
             </h3>
             <p className="text-xs text-black/50 mt-0.5">
-              Click &apos;Activate&apos; on any model to immediately switch AnyCodex. No terminal commands required.
+              Only models enabled in your SkyRoute &apos;Enabled Models&apos; tab appear here. Click &apos;Activate&apos; to switch AnyCodex instantly.
             </p>
           </div>
 
@@ -339,9 +334,9 @@ export default function AnyCodexPanel() {
         {/* Category Tabs */}
         <div className="flex items-center gap-1.5 border-b border-black/[.06] pb-3 mb-5 overflow-x-auto">
           {[
-            { id: "all", label: `All Available (${availableModels.length})` },
-            { id: "meta", label: "Meta Models (Free & Unlimited)" },
-            { id: "skirt", label: "Skirt & Upstream Models" },
+            { id: "all", label: `Enabled Models (${enabledModels.length})` },
+            ...(enabledModels.some(m => m.category === "meta") ? [{ id: "meta", label: "Meta Models" }] : []),
+            ...(enabledModels.some(m => m.category === "skirt") ? [{ id: "skirt", label: "Skirt Models" }] : []),
             { id: "presets", label: `Quick Presets (${presets.length})` }
           ].map((c) => (
             <button
@@ -484,7 +479,16 @@ export default function AnyCodexPanel() {
             })}
             {filteredModels.length === 0 && (
               <div className="col-span-full py-12 text-center text-black/40 text-xs">
-                No models found matching &apos;{search}&apos;
+                {enabledModels.length === 0 ? (
+                  <div className="space-y-1.5 max-w-sm mx-auto">
+                    <p className="text-sm font-semibold text-black/60">No models currently enabled in SkyRoute</p>
+                    <p className="text-xs text-black/40">
+                      Go to the &quot;Models&quot; tab in the sidebar and enable the models you want to use. They will appear here immediately!
+                    </p>
+                  </div>
+                ) : (
+                  <p>No enabled models found matching &apos;{search}&apos;</p>
+                )}
               </div>
             )}
           </div>
