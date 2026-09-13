@@ -2,7 +2,7 @@ import http from "node:http";
 import https from "node:https";
 import crypto from "node:crypto";
 import type { Request, Response } from "express";
-import { resolveRoutes, listProviders, logUsage, estimateTokens } from "./gatewayStore";
+import { resolveRoutes, listProviders, getProviderRaw, logUsage, estimateTokens } from "./gatewayStore";
 
 const toolRegistry = new Map<string, { name: string; namespace?: string }>();
 
@@ -352,8 +352,11 @@ export async function handleResponsesRequest(req: Request, res: Response) {
     const metaProv = allProviders.find(p => p.enabled && (p.name.toLowerCase().includes("meta") || p.baseUrl.includes("meta.ai")));
     const fallbackProv = metaProv || allProviders.find(p => p.enabled);
     if (fallbackProv) {
-      targetBaseUrl = fallbackProv.baseUrl.replace(/\/v1\/?$/, "");
-      targetApiKey = fallbackProv.apiKey;
+      const raw = getProviderRaw(fallbackProv.id);
+      if (raw) {
+        targetBaseUrl = raw.baseUrl.replace(/\/v1\/?$/, "");
+        targetApiKey = raw.apiKey;
+      }
     }
   }
 

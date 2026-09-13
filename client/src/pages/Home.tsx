@@ -23,11 +23,13 @@ import {
   Zap,
   ExternalLink,
   Sparkles,
+  Bot,
 } from "lucide-react";
 import { toast } from "sonner";
 import { Area, AreaChart, CartesianGrid, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import AnyCodexPanel from "@/components/AnyCodexPanel";
 
-type Tab = "overview" | "providers" | "models" | "enabled" | "aliases" | "keys" | "usage";
+type Tab = "overview" | "anycodex" | "providers" | "models" | "enabled" | "aliases" | "keys" | "usage";
 
 function copy(v: string) {
   navigator.clipboard.writeText(v);
@@ -245,6 +247,7 @@ export default function Home() {
   const enabledCount = allowed.filter((m: any) => m.enabled).length;
   const nav: { id: Tab; label: string; icon: any; count?: number }[] = [
     { id: "overview", label: "Overview", icon: Layers },
+    { id: "anycodex", label: "AnyCodex", icon: Bot },
     { id: "providers", label: "Providers", icon: Server, count: providers.length },
     { id: "models", label: "Models", icon: Boxes, count: allowed.length },
     { id: "enabled", label: "Enabled Models", icon: CheckCircle, count: enabledCount },
@@ -351,6 +354,7 @@ export default function Home() {
           ) : (
             <>
               {tab === "overview" && <Overview providers={providers} combos={combos} keys={keys} allowed={allowed} endpoint={endpoint} onTab={setTab} />}
+              {tab === "anycodex" && <AnyCodexPanel />}
               {tab === "providers" && (
                 <Providers
                   providers={filteredProviders}
