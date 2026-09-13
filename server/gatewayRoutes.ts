@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Express, Request, Response } from "express";
 import { authenticateClientKey, estimateTokens, getKeyPrefix, logUsage, proxyChat, resolveRoutes, snapshot, getProvider, listExposedModels, listOpusAliases } from "./gatewayStore";
+import { handleResponsesRequest } from "./responsesHandler";
 
 function bearer(req: Request) { return req.headers.authorization?.replace(/^Bearer\s+/i, "") || (req.headers["x-api-key"] as string | undefined) || (req.headers["api-key"] as string | undefined); }
 function requireKey(req: Request, res: Response) { if (authenticateClientKey(bearer(req))) return true; res.status(401).json({ error: { message: "Valid bearer API key required", type: "authentication_error" } }); return false; }
@@ -481,6 +482,10 @@ export function registerGatewayRoutes(app: Express) {
       if (!res.headersSent) res.status(502).json({ error: { message, type: "upstream_error" } });
       else res.end();
     }
+  });
+
+  app.post("/v1/responses", async (req, res) => {
+    await handleResponsesRequest(req, res);
   });
 
   // Unknown /v1/* paths must return JSON, never the SPA HTML fallback.
