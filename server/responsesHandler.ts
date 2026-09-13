@@ -5,6 +5,21 @@ import type { Request, Response } from "express";
 import { resolveRoutes, listProviders, getProviderRaw, logUsage, estimateTokens } from "./gatewayStore";
 
 const toolRegistry = new Map<string, { name: string; namespace?: string }>();
+const reverseToolRegistry = new Map<string, string>();
+
+// Pre-populate core AnyCodex CUA tools so translation is always reliable
+toolRegistry.set("cua_repl__js", { name: "js", namespace: "mcp__cua_repl" });
+toolRegistry.set("cua_repl__js_reset", { name: "js_reset", namespace: "mcp__cua_repl" });
+toolRegistry.set("cua_repl__turn_ended", { name: "turn_ended", namespace: "mcp__cua_repl" });
+reverseToolRegistry.set("mcp__cua_repl::js", "cua_repl__js");
+reverseToolRegistry.set("cua_repl::js", "cua_repl__js");
+reverseToolRegistry.set("js", "cua_repl__js");
+reverseToolRegistry.set("mcp__cua_repl::js_reset", "cua_repl__js_reset");
+reverseToolRegistry.set("cua_repl::js_reset", "cua_repl__js_reset");
+reverseToolRegistry.set("js_reset", "cua_repl__js_reset");
+reverseToolRegistry.set("mcp__cua_repl::turn_ended", "cua_repl__turn_ended");
+reverseToolRegistry.set("cua_repl::turn_ended", "cua_repl__turn_ended");
+reverseToolRegistry.set("turn_ended", "cua_repl__turn_ended");
 
 function cleanToolName(str: string): string {
   return (str || "").replace(/[^a-zA-Z0-9_-]/g, "_");
@@ -17,6 +32,88 @@ function getUniqueMetaToolName(rawName: string): string {
     name = `${name.slice(0, 55)}_${hash}`;
   }
   return name;
+}
+
+function hasTopLevelReturn(code: string): boolean {
+  if (!code || typeof code !== "string") return false;
+  let depth = 0;
+  let inSingleQuote = false;
+  let inDoubleQuote = false;
+  let inTemplate = false;
+  let inLineComment = false;
+  let inBlockComment = false;
+
+  for (let i = 0; i < code.length; i++) {
+    const char = code[i];
+    const nextChar = code[i + 1];
+
+    if (inLineComment) {
+      if (char === "\n") inLineComment = false;
+      continue;
+    }
+    if (inBlockComment) {
+      if (char === "*" && nextChar === "/") {
+        inBlockComment = false;
+        i++;
+      }
+      continue;
+    }
+    if (inSingleQuote) {
+      if (char === "\\") { i++; continue; }
+      if (char === "'") inSingleQuote = false;
+      continue;
+    }
+    if (inDoubleQuote) {
+      if (char === "\\") { i++; continue; }
+      if (char === '"') inDoubleQuote = false;
+      continue;
+    }
+    if (inTemplate) {
+      if (char === "\\") { i++; continue; }
+      if (char === "`") inTemplate = false;
+      continue;
+    }
+
+    if (char === "/" && nextChar === "/") {
+      inLineComment = true;
+      i++;
+      continue;
+    }
+    if (char === "/" && nextChar === "*") {
+      inBlockComment = true;
+      i++;
+      continue;
+    }
+    if (char === "'") { inSingleQuote = true; continue; }
+    if (char === '"') { inDoubleQuote = true; continue; }
+    if (char === "`") { inTemplate = true; continue; }
+
+    if (char === "{") {
+      depth++;
+      continue;
+    }
+    if (char === "}") {
+      if (depth > 0) depth--;
+      continue;
+    }
+
+    if (depth === 0) {
+      if (code.slice(i, i + 6) === "return") {
+        const prev = i > 0 ? code[i - 1] : " ";
+        const next = i + 6 < code.length ? code[i + 6] : " ";
+        if (/[\s;(){}\[\]]/.test(prev) && /[\s;(){}\[\]]/.test(next)) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+function sanitizeJsCode(code: string): string {
+  if (!code || typeof code !== "string") return code;
+  if (!hasTopLevelReturn(code)) return code;
+  return `const _res = await (async () => {\n${code}\n})(); if (_res !== undefined && typeof nodeRepl !== "undefined") nodeRepl.write(_res);`;
 }
 
 function sanitizeSchema(schema: any, isTopLevel = false): any {
@@ -145,6 +242,10 @@ function buildMetaTools(rawTools: any[], rawInputs: any[]): any[] {
         if (!inner || !inner.name) continue;
         if (inner.name === "exec") {
           toolRegistry.set("exec", { name: "exec", namespace: undefined });
+          reverseToolRegistry.set("exec", "exec");
+          reverseToolRegistry.set("::exec", "exec");
+          reverseToolRegistry.set(`${origNs}::exec`, "exec");
+          reverseToolRegistry.set(`${cleanNs}::exec`, "exec");
           addTool({
             type: "function",
             name: "exec",
@@ -167,10 +268,13 @@ function buildMetaTools(rawTools: any[], rawInputs: any[]): any[] {
             name: inner.name,
             namespace: codexNs
           });
+          reverseToolRegistry.set(`${origNs}::${inner.name}`, metaName);
+          reverseToolRegistry.set(`${cleanNs}::${inner.name}`, metaName);
+          reverseToolRegistry.set(inner.name, metaName);
 
           let desc = inner.description || inner.name || "tool function";
           if (inner.name === "js" && (cleanNs === "cua_repl" || origNs.includes("cua_repl"))) {
-            desc = "UI automation through a persistent JavaScript session using the initialized CUA API.";
+            desc = "UI automation through a persistent JavaScript session using the initialized CUA API. Examples: 'await cua.listApps()', 'let app = await cua.getApp(\"App Name\")', 'await app.getAXState()', 'await app.click(\"target\")'. Runs in Node REPL with top-level await.";
           }
 
           addTool({
@@ -184,6 +288,8 @@ function buildMetaTools(rawTools: any[], rawInputs: any[]): any[] {
       }
     } else if (t.name === "exec") {
       toolRegistry.set("exec", { name: "exec", namespace: undefined });
+      reverseToolRegistry.set("exec", "exec");
+      reverseToolRegistry.set("::exec", "exec");
       addTool({
         type: "function",
         name: "exec",
@@ -205,6 +311,8 @@ function buildMetaTools(rawTools: any[], rawInputs: any[]): any[] {
         name: t.name,
         namespace: undefined
       });
+      reverseToolRegistry.set(t.name, cleanName);
+      reverseToolRegistry.set(`::${t.name}`, cleanName);
       addTool({
         type: "function",
         name: cleanName,
@@ -226,7 +334,7 @@ function translateInputs(inputs: any[]): any[] {
     if (item.type === "additional_tools") continue;
 
     if (item.type === "custom_tool_call") {
-      const toolName = item.name || "custom_tool";
+      const toolName = item.name || "exec";
       let args = "{}";
       if (typeof item.input === "string") {
         args = JSON.stringify({ code: item.input });
@@ -235,8 +343,8 @@ function translateInputs(inputs: any[]): any[] {
       }
       translated.push({
         type: "function_call",
-        id: item.id || `call_${Date.now()}`,
-        call_id: item.call_id || item.id || `call_${Date.now()}`,
+        id: (item.id || `call_${Date.now()}`).replace(/:/g, "_"),
+        call_id: (item.call_id || item.id || `call_${Date.now()}`).replace(/:/g, "_"),
         name: toolName,
         arguments: args
       });
@@ -244,14 +352,73 @@ function translateInputs(inputs: any[]): any[] {
       let outputStr = "";
       if (typeof item.output === "string") {
         outputStr = item.output;
+      } else if (Array.isArray(item.output)) {
+        outputStr = item.output
+          .map((part: any) => (typeof part === "string" ? part : part?.text || JSON.stringify(part)))
+          .join("\n");
       } else if (item.output !== undefined) {
         outputStr = JSON.stringify(item.output);
       }
       translated.push({
         type: "function_call_output",
-        call_id: item.call_id || "",
+        call_id: (item.call_id || "").replace(/:/g, "_"),
         output: outputStr
       });
+    } else if (item.type === "function_call") {
+      const cloned = { ...item };
+      if (typeof cloned.id === "string" && cloned.id.includes(":")) {
+        cloned.id = cloned.id.replace(/:/g, "_");
+      }
+      if (typeof cloned.call_id === "string" && cloned.call_id.includes(":")) {
+        cloned.call_id = cloned.call_id.replace(/:/g, "_");
+      }
+
+      // Map AnyCodex tool name + namespace back to Meta's flat tool name
+      const origNs = cloned.namespace || "";
+      let cleanNs = origNs;
+      if (cleanNs.startsWith("mcp__")) cleanNs = cleanNs.slice(5);
+      cleanNs = cleanToolName(cleanNs);
+
+      let targetName = cloned.name;
+      if (reverseToolRegistry.has(`${origNs}::${cloned.name}`)) {
+        targetName = reverseToolRegistry.get(`${origNs}::${cloned.name}`)!;
+      } else if (reverseToolRegistry.has(`${cleanNs}::${cloned.name}`)) {
+        targetName = reverseToolRegistry.get(`${cleanNs}::${cloned.name}`)!;
+      } else if (cleanNs && !cloned.name.startsWith(cleanNs)) {
+        targetName = getUniqueMetaToolName(`${cleanNs}__${cleanToolName(cloned.name)}`);
+      } else if (reverseToolRegistry.has(cloned.name)) {
+        targetName = reverseToolRegistry.get(cloned.name)!;
+      }
+
+      cloned.name = targetName;
+      delete cloned.namespace;
+
+      // Guarantee arguments is a valid JSON string representing an object
+      if (typeof cloned.arguments !== "string" || !cloned.arguments.trim()) {
+        cloned.arguments = "{}";
+      } else {
+        try {
+          JSON.parse(cloned.arguments);
+        } catch {
+          cloned.arguments = "{}";
+        }
+      }
+      translated.push(cloned);
+    } else if (item.type === "function_call_output") {
+      const cloned = { ...item };
+      if (typeof cloned.call_id === "string" && cloned.call_id.includes(":")) {
+        cloned.call_id = cloned.call_id.replace(/:/g, "_");
+      }
+      if (Array.isArray(cloned.output)) {
+        cloned.output = cloned.output
+          .map((part: any) => (typeof part === "string" ? part : part?.text || JSON.stringify(part)))
+          .join("\n");
+      } else if (typeof cloned.output !== "string" && cloned.output !== undefined && cloned.output !== null) {
+        cloned.output = JSON.stringify(cloned.output);
+      } else if (cloned.output === undefined || cloned.output === null) {
+        cloned.output = "";
+      }
+      translated.push(cloned);
     } else {
       translated.push(item);
     }
@@ -274,9 +441,9 @@ function transformItem(item: any) {
     if (item.arguments !== undefined) {
       try {
         const parsed = JSON.parse(item.arguments);
-        item.input = parsed.code || item.arguments;
+        item.input = sanitizeJsCode(parsed.code || item.arguments);
       } catch {
-        item.input = item.arguments;
+        item.input = sanitizeJsCode(item.arguments);
       }
       delete item.arguments;
     } else if (item.input === undefined) {
@@ -294,10 +461,7 @@ function transformItem(item: any) {
       } else {
         delete item.namespace;
       }
-      return;
-    }
-
-    if (item.name.includes("__")) {
+    } else if (item.name.includes("__")) {
       const idx = item.name.lastIndexOf("__");
       let ns = item.name.slice(0, idx);
       const name = item.name.slice(idx + 2);
@@ -306,7 +470,20 @@ function transformItem(item: any) {
       }
       item.namespace = ns;
       item.name = name;
+    } else if (item.name === "js" || item.name === "js_reset" || item.name === "turn_ended") {
+      item.namespace = "mcp__cua_repl";
     }
+  }
+
+  // Also sanitize code in function_call arguments (for js and other tools)
+  if (typeof item.arguments === "string" && item.arguments.trim()) {
+    try {
+      const parsed = JSON.parse(item.arguments);
+      if (typeof parsed.code === "string") {
+        parsed.code = sanitizeJsCode(parsed.code);
+        item.arguments = JSON.stringify(parsed);
+      }
+    } catch {}
   }
 
   if (typeof item.id === "string" && item.id.includes(":")) {
@@ -393,6 +570,7 @@ export async function handleResponsesRequest(req: Request, res: Response) {
     proxyRes => {
       const isOk = (proxyRes.statusCode ?? 500) >= 200 && (proxyRes.statusCode ?? 500) < 300;
       if (!isOk) {
+        console.error(`[ResponsesHandler] Upstream error: status=${proxyRes.statusCode}`);
         res.writeHead(proxyRes.statusCode ?? 500, {
           "content-type": proxyRes.headers["content-type"] || "application/json",
           "cache-control": "no-cache"
@@ -458,9 +636,9 @@ export async function handleResponsesRequest(req: Request, res: Response) {
                   if (payload.item.arguments !== undefined) {
                     try {
                       const p = JSON.parse(payload.item.arguments);
-                      payload.item.input = p.code || payload.item.arguments;
+                      payload.item.input = sanitizeJsCode(p.code || payload.item.arguments);
                     } catch {
-                      payload.item.input = payload.item.arguments;
+                      payload.item.input = sanitizeJsCode(payload.item.arguments);
                     }
                     delete payload.item.arguments;
                   }
@@ -475,12 +653,22 @@ export async function handleResponsesRequest(req: Request, res: Response) {
                   if (payload.arguments !== undefined) {
                     try {
                       const p = JSON.parse(payload.arguments);
-                      payload.input = p.code || payload.arguments;
+                      payload.input = sanitizeJsCode(p.code || payload.arguments);
                     } catch {
-                      payload.input = payload.arguments;
+                      payload.input = sanitizeJsCode(payload.arguments);
                     }
                     delete payload.arguments;
                   }
+                }
+              } else if (payload.type === "response.function_call_arguments.done") {
+                if (typeof payload.arguments === "string" && payload.arguments.trim()) {
+                  try {
+                    const p = JSON.parse(payload.arguments);
+                    if (typeof p.code === "string") {
+                      p.code = sanitizeJsCode(p.code);
+                      payload.arguments = JSON.stringify(p);
+                    }
+                  } catch {}
                 }
               }
 
