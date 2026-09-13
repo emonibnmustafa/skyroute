@@ -61,6 +61,29 @@ export default function Home() {
   const [cookieCheck, setCookieCheck] = useState<{ ok: boolean; msg: string } | null>(null);
 
   const utils = trpc.useUtils();
+  const [isRefreshingAll, setIsRefreshingAll] = useState(false);
+
+  const handleUniversalRefresh = async () => {
+    setIsRefreshingAll(true);
+    try {
+      await utils.invalidate();
+      await Promise.allSettled([
+        utils.gateway.snapshot.refetch(),
+        utils.gateway.allowedModels.refetch(),
+        utils.anycodex.status.refetch(),
+        allowedQ.refetch(),
+      ]);
+      fetch("/health")
+        .then((r) => setHealth(r.ok ? "online" : "offline"))
+        .catch(() => setHealth("offline"));
+      toast.success("SkyRoute refreshed — all data up to date");
+    } catch (e: any) {
+      toast.error("Refresh failed: " + (e?.message || e));
+    } finally {
+      setTimeout(() => setIsRefreshingAll(false), 500);
+    }
+  };
+
   const { data, isLoading } = trpc.gateway.snapshot.useQuery(undefined, { refetchInterval: 5000 });
   const allowedQ = trpc.gateway.allowedModels.useQuery();
   const saveProvider = trpc.gateway.saveProvider.useMutation({
@@ -158,14 +181,33 @@ export default function Home() {
   const addAllowed = trpc.gateway.addAllowedModel.useMutation({
     onSuccess: () => {
       allowedQ.refetch();
+      utils.gateway.allowedModels.invalidate();
+      utils.anycodex.status.invalidate();
       toast.success("Added to SkyRoute by Emon models");
     },
     onError: (e) => toast.error(e.message),
   });
-  const removeAllowed = trpc.gateway.removeAllowedModel.useMutation({ onSuccess: () => allowedQ.refetch() });
-  const toggleAllowed = trpc.gateway.toggleAllowedModel.useMutation({ onSuccess: () => allowedQ.refetch() });
+  const removeAllowed = trpc.gateway.removeAllowedModel.useMutation({
+    onSuccess: () => {
+      allowedQ.refetch();
+      utils.gateway.allowedModels.invalidate();
+      utils.anycodex.status.invalidate();
+    }
+  });
+  const toggleAllowed = trpc.gateway.toggleAllowedModel.useMutation({
+    onSuccess: () => {
+      allowedQ.refetch();
+      utils.gateway.allowedModels.invalidate();
+      utils.anycodex.status.invalidate();
+    }
+  });
   const setAliasAllowed = (trpc.gateway as any).setAllowedModelAlias.useMutation({
-    onSuccess: () => { allowedQ.refetch(); toast.success("Alias saved"); },
+    onSuccess: () => {
+      allowedQ.refetch();
+      utils.gateway.allowedModels.invalidate();
+      utils.anycodex.status.invalidate();
+      toast.success("Alias saved");
+    },
     onError: (e: any) => toast.error(e.message),
   });
   const refreshModels = (trpc.gateway as any).refreshModels.useMutation({
@@ -276,6 +318,16 @@ export default function Home() {
             </span>
           </div>
           <div className="flex items-center gap-2">
+            <button
+              onClick={handleUniversalRefresh}
+              disabled={isRefreshingAll}
+              className="mac-card rounded-full px-3 py-1.5 text-[12px] font-medium flex items-center gap-1.5 hover:bg-white transition text-black/80 shadow-xs active:scale-95"
+              title="Universal Refresh: Refresh all data across the entire app"
+            >
+              <RefreshCw size={13} className={isRefreshingAll ? "animate-spin text-[#007AFF]" : "text-[#007AFF]"} />
+              Universal Refresh
+            </button>
+
             <div className="hidden sm:flex items-center gap-2 text-xs">
               <span className="text-black/40" title="Claude Desktop Gateway mode expects the root URL (no /v1). VS Code / OpenAI clients need the /v1 URL.">Gateway</span>
               <button onClick={() => copy(`${endpoint}/v1`)} title="OpenAI / VS Code URL (with /v1). For Claude Desktop Gateway mode, use the root URL without /v1." className="mac-card rounded-full px-3 py-1.5 font-mono text-[12px] flex items-center gap-1.5 hover:bg-white">
@@ -308,7 +360,19 @@ export default function Home() {
                 </button>
               ))}
             </nav>
-            <div className="mt-4 p-3 rounded-xl bg-[#f5f5f7] border border-black/[.04]">
+
+            <div className="mt-2.5 pt-2.5 border-t border-black/[.06]">
+              <button
+                onClick={handleUniversalRefresh}
+                disabled={isRefreshingAll}
+                className="w-full flex items-center justify-center gap-2 px-2.5 py-2 rounded-xl text-[12px] font-medium bg-black/[.03] hover:bg-[#007AFF] hover:text-white text-black/75 transition shadow-xs active:scale-98"
+              >
+                <RefreshCw size={13} className={isRefreshingAll ? "animate-spin text-[#007AFF]" : "text-[#007AFF]"} />
+                Universal Refresh
+              </button>
+            </div>
+
+            <div className="mt-3 p-3 rounded-xl bg-[#f5f5f7] border border-black/[.04]">
               <div className="text-[11px] font-semibold text-black/60 flex items-center gap-1.5">
                 <Activity size={12} /> System
               </div>

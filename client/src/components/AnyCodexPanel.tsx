@@ -2,6 +2,7 @@ import { useState, useMemo } from "react";
 import { trpc } from "@/lib/trpc";
 import {
   RotateCw,
+  RefreshCw,
   Check,
   Search,
   Bot,
@@ -21,6 +22,25 @@ export default function AnyCodexPanel() {
   });
 
   const [search, setSearch] = useState("");
+  const [isRefreshing, setIsRefreshing] = useState(false);
+
+  const handleUniversalRefresh = async () => {
+    setIsRefreshing(true);
+    try {
+      await utils.invalidate();
+      await Promise.allSettled([
+        utils.gateway.snapshot.refetch(),
+        utils.gateway.allowedModels.refetch(),
+        utils.anycodex.status.refetch(),
+        allowedQ.refetch(),
+      ]);
+      toast.success("SkyRoute refreshed — all data up to date");
+    } catch (e: any) {
+      toast.error("Refresh failed: " + (e?.message || e));
+    } finally {
+      setTimeout(() => setIsRefreshing(false), 500);
+    }
+  };
 
   const applyMutation = trpc.anycodex.applyModel.useMutation({
     onSuccess: (res) => {
@@ -123,6 +143,16 @@ export default function AnyCodexPanel() {
           </div>
 
           <div className="flex items-center gap-2.5">
+            <button
+              disabled={isRefreshing}
+              onClick={handleUniversalRefresh}
+              className="mac-card px-3.5 py-2 rounded-xl text-xs font-medium hover:bg-black/[.03] flex items-center gap-1.5 transition text-black/80"
+              title="Universal Refresh: Refresh all data across SkyRoute and AnyCodex"
+            >
+              <RefreshCw size={13} className={isRefreshing ? "animate-spin text-[#007AFF]" : "text-[#007AFF]"} />
+              Universal Refresh
+            </button>
+
             <button
               disabled={testRouteMutation.isPending}
               onClick={() => testRouteMutation.mutate({ model: matchingEnabledModel?.rawModelId || activeModelDisplay })}
