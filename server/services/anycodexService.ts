@@ -153,10 +153,10 @@ export function getAnyCodexStatus() {
   const sandboxMatch = content.match(/^\s*sandbox_mode\s*=\s*["']([^"']+)["']/m);
 
   let activeBaseUrl = "http://127.0.0.1:3000/v1";
-  let activeProviderName = "Meta Muse Spark (Unlimited Free)";
+  let activeProviderName = "SkyRoute";
   let wireApi = "responses";
 
-  const provId = providerMatch ? providerMatch[1] : "meta";
+  const provId = providerMatch ? providerMatch[1] : "skyroute";
   const provSectionRegex = new RegExp(`\\[model_providers\\.${provId}\\]([\\s\\S]*?)(?=\\n\\[|\\Z)`);
   const provSection = content.match(provSectionRegex);
   if (provSection) {
@@ -198,9 +198,9 @@ export function applyAnyCodexModel(opts: {
 
   let content = fs.readFileSync(configPath, "utf8");
   const targetModel = opts.model.trim();
-  const targetProv = (opts.providerId || "meta").trim();
+  const targetProv = "skyroute";
   const targetBaseUrl = (opts.baseUrl || "http://127.0.0.1:3000/v1").trim();
-  const targetName = (opts.providerName || "Meta Muse Spark (Unlimited Free)").trim();
+  const targetName = "SkyRoute";
 
   // 1. Update model
   if (/^\s*model\s*=/m.test(content)) {
@@ -216,16 +216,12 @@ export function applyAnyCodexModel(opts: {
     content = content.replace(new RegExp(`(model\\s*=\\s*"${targetModel}"\\n)`), `$1model_provider = "${targetProv}"\n`);
   }
 
-  // 3. Ensure provider block exists
-  const provHeader = `[model_providers.${targetProv}]`;
-  if (!content.includes(provHeader)) {
-    const block = `\n${provHeader}\nname = "${targetName}"\nbase_url = "${targetBaseUrl}"\nexperimental_bearer_token = "local"\nwire_api = "responses"\n`;
-    content = content.trimEnd() + "\n" + block;
-  } else {
-    // Update base_url if needed
-    const regex = new RegExp(`(\\[model_providers\\.${targetProv}\\][\\s\\S]*?base_url\\s*=\\s*["'])[^"']+`, "m");
-    content = content.replace(regex, `$1${targetBaseUrl}`);
-  }
+  // 3. Remove all old [model_providers.*] sections to prevent multiple or stale blocks
+  content = content.replace(/\[model_providers\.[^\]]+\][\s\S]*?(?=\n\[|\Z)/g, "");
+
+  // 4. Ensure unified skyroute provider block exists
+  const block = `\n[model_providers.${targetProv}]\nname = "${targetName}"\nbase_url = "${targetBaseUrl}"\nexperimental_bearer_token = "local"\nwire_api = "responses"\n`;
+  content = content.trimEnd() + "\n" + block;
 
   fs.writeFileSync(configPath, content, "utf8");
 
@@ -309,10 +305,10 @@ export async function controlAnyCodexApp(action: "launch" | "restart" | "quit") 
 
   try {
     if (action === "quit") {
-      await execAsync("pkill -f 'Codex-Meta' || true");
+      await execAsync("pkill -f 'AnyCodex.app' || pkill -f 'Codex-Meta' || true");
       return { success: true, isRunning: false };
     } else if (action === "restart") {
-      await execAsync("pkill -f 'Codex-Meta' || true");
+      await execAsync("pkill -f 'AnyCodex.app' || pkill -f 'Codex-Meta' || true");
       await new Promise(res => setTimeout(res, 800));
       await execAsync(`open "${targetApp}"`);
       return { success: true, isRunning: true };
